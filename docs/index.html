@@ -248,12 +248,18 @@ $(document).ready(function () {
         <span class="icon-bar"></span>
         <span class="icon-bar"></span>
       </button>
-      <a class="navbar-brand" href="index.html">aFib heart atlas paper</a>
+      <a class="navbar-brand" href="index.html">aFib_heart_atlas_paper</a>
     </div>
     <div id="navbar" class="navbar-collapse collapse">
       <ul class="nav navbar-nav">
         <li>
   <a href="index.html">Home</a>
+</li>
+<li>
+  <a href="about.html">About</a>
+</li>
+<li>
+  <a href="license.html">License</a>
 </li>
       </ul>
       <ul class="nav navbar-nav navbar-right">
@@ -344,13 +350,13 @@ results.</p>
 <div class="panel panel-default">
 <div class="panel-heading">
 <p class="panel-title">
-<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongRepositoryversionstrong1575f94">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongRepositoryversionstrongcb846c8">
 <span class="glyphicon glyphicon-ok text-success"
-aria-hidden="true"></span> <strong>Repository version:</strong> 1575f94
+aria-hidden="true"></span> <strong>Repository version:</strong> cb846c8
 </a>
 </p>
 </div>
-<div id="strongRepositoryversionstrong1575f94"
+<div id="strongRepositoryversionstrongcb846c8"
 class="panel-collapse collapse">
 <div class="panel-body">
 <p>
@@ -359,7 +365,7 @@ and connecting the code version to the results is critical for
 reproducibility.
 </p>
 <p>
-The results in this page were generated with repository version 1575f94.
+The results in this page were generated with repository version cb846c8.
 See the <em>Past versions</em> tab to see a history of the changes made
 to the R Markdown and HTML files.
 </p>
@@ -377,7 +383,6 @@ Ignored files:
     Ignored:    .DS_Store
 
 Untracked files:
-    Untracked:  R/
     Untracked:  analysis/AF_gene_mapping_pipeline.Rmd
     Untracked:  analysis/benchmark_gene_set_enrichment.Rmd
     Untracked:  analysis/celltype_pip_partition_DEG.Rmd
@@ -395,12 +400,45 @@ Untracked files:
     Untracked:  analysis/palette.rds
     Untracked:  analysis/quality_control.Rmd
     Untracked:  analysis/summarize_finemapping_results.Rmd
-
-Unstaged changes:
-    Modified:   analysis/_site.yml
-    Deleted:    analysis/about.Rmd
-    Deleted:    analysis/license.Rmd
-    Deleted:    code/README.md
+    Untracked:  code/GO_enrichment.R
+    Untracked:  code/TF_footprint_torus_enrichment.R
+    Untracked:  code/TF_geneScore_correlation.R
+    Untracked:  code/TF_motif_rna_correlation.R
+    Untracked:  code/analysis_utils.R
+    Untracked:  code/atac_peaks_qc.R
+    Untracked:  code/atac_utils.R
+    Untracked:  code/bulk_vs_singlecell_coacc.R
+    Untracked:  code/characterize_top_snps.R
+    Untracked:  code/clean_genomic_annotations.R
+    Untracked:  code/cluster_atacseq.R
+    Untracked:  code/cluster_rnaseq.R
+    Untracked:  code/deepSEA.R
+    Untracked:  code/deltaSVM.R
+    Untracked:  code/eGene_expression_heatmap.R
+    Untracked:  code/eGene_expression_patterns.R
+    Untracked:  code/eQTL_overlap_with_PREs.R
+    Untracked:  code/eQTL_power_sim.R
+    Untracked:  code/finemapping_different_priors.R
+    Untracked:  code/finemapping_torus_prior.R
+    Untracked:  code/finemapping_uniform_prior.R
+    Untracked:  code/gene_mapping_utlis.R
+    Untracked:  code/gwas_genes_enrichment.R
+    Untracked:  code/gwas_randomSnps_motifbreak.R
+    Untracked:  code/gwas_random_snps_chipseq.R
+    Untracked:  code/make_genomic_annots_gtf.R
+    Untracked:  code/mapgen_trackplots.R
+    Untracked:  code/match_snps_snpsnap_batches.R
+    Untracked:  code/motifBreak_analysis.R
+    Untracked:  code/normalize_GWAS.R
+    Untracked:  code/pchic_vs_coaccess.R
+    Untracked:  code/peak_calling.R
+    Untracked:  code/plot_metadata.R
+    Untracked:  code/prepare_Coaccessibility.R
+    Untracked:  code/prepare_HiC.R
+    Untracked:  code/prepare_eQTL_for_gwas_overlap.R
+    Untracked:  code/prepare_gene_mapping_categories.R
+    Untracked:  code/process_ATAC.R
+    Untracked:  code/process_RNA.R
 
 </code></pre>
 <p>
@@ -445,6 +483,23 @@ Message
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>
+html
+</td>
+<td>
+cb846c8
+</td>
+<td>
+kevinlkx
+</td>
+<td>
+2023-05-10
+</td>
+<td>
+Build site.
+</td>
+</tr>
 <tr>
 <td>
 Rmd
