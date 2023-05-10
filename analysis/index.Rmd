@@ -21,7 +21,8 @@ Single-cell genomics improves the discovery of risk variants and genes of cardia
 Alan Selewa\*, Kaixuan Luo\*, Michael Wasney, Linsin Smith, Chenwei Tang, Heather Eckart, Ivan Moskowitz, Anindita Basu, Xin He, Sebastian Pott.
 medRxiv 2022.02.02.22270312; doi: https://doi.org/10.1101/2022.02.02.22270312
 
-## Mapgen workflow: 
+## Mapgen workflow
+
 We implemented the computational and statistical precedure in the R package [Mapgen](https://kevinlkx.github.io/mapgen/articles/index.html). 
 ![](assets/workflow.overview.png)
 
