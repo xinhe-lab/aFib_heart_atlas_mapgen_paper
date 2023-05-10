@@ -1,5 +1,5 @@
 ---
-title: "Home"
+title: "Code and data resources for aFib heart atlas paper"
 site: workflowr::wflow_site
 output:
   workflowr::wflow_html:
@@ -8,4 +8,39 @@ editor_options:
   chunk_output_type: console
 ---
 
-Welcome to my research website.
+This repository contains code and data resources to accompany our paper:
+"Single-cell genomics improves the discovery of risk variants and genes of Atrial Fibrillation".
+
+## Abstract
+
+Genome-wide association studies (GWAS) have linked hundreds of loci to cardiac diseases. However, in most loci the causal variants and their target genes remain unknown. We developed a combined experimental and analytical approach that integrates single cell epigenomics with GWAS to prioritize risk variants and genes. We profiled accessible chromatin in single cells obtained from human hearts and leveraged the data to study genetics of Atrial Fibrillation (AF), the most common cardiac arrhythmia. Enrichment analysis of AF risk variants using cell-type-resolved open chromatin regions (OCRs) implicated cardiomyocytes as the main mediator of AF risk. We then performed statistical fine-mapping, leveraging the information in OCRs, and identified putative causal variants in 122 AF-associated loci. Taking advantage of the fine-mapping results, our novel statistical procedure for gene discovery prioritized 46 high-confidence risk genes, highlighting transcription factors and signal transduction pathways important for heart development. In summary, our analysis provides a comprehensive map of AF risk variants and genes, and a general framework to integrate single-cell genomics with genetic studies of complex traits.
+
+## Reference
+
+Single-cell genomics improves the discovery of risk variants and genes of cardiac traits.
+Alan Selewa\*, Kaixuan Luo\*, Michael Wasney, Linsin Smith, Chenwei Tang, Heather Eckart, Ivan Moskowitz, Anindita Basu, Xin He, Sebastian Pott.
+medRxiv 2022.02.02.22270312; doi: https://doi.org/10.1101/2022.02.02.22270312
+
+## Mapgen workflow: 
+We implemented the computational and statistical precedure in the R package [Mapgen](https://kevinlkx.github.io/mapgen/articles/index.html). 
+![](assets/workflow.overview.png)
+
+   1. Obtain cell-type-resolved open chromatin regions (OCRs) using scATAC-seq and snRNA-seq. 
+   2. Assess the enrichment of genetic signals of a trait of interest in OCRs across all the cell types.
+   3. Perform Bayesian statistical fine mapping on trait-associated loci, 
+   using a informative prior that favors likely 
+   functional variants located in OCRs of enriched cell types. 
+   4. Assign the likely cell type(s) through which the causal variants act in most loci 
+   using fine-mapped SNPs and its associated cell type information.
+   5. Use our novel gene mapping procedure to infer causal genes at each locus. 
+
+## Code repository
+
+ * [Analysis](https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/analysis)
+ 
+ * [R code](https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/R)
+
+## Data
+
+  * GEO repository for snRNA-seq and scATAC-seq data from our study: accession [GSE224997](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE224997).
+
