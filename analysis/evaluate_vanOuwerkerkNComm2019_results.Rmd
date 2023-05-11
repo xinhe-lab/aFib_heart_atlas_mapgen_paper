@@ -1,0 +1,93 @@
+---
+title: "Evaluate finemapping results for variants reported in van Ouwerkerk et al., Nature Communications 2019"
+output:
+  workflowr::wflow_html:
+    code_folding: hide
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r knitr-opts, include=FALSE}
+knitr::opts_chunk$set(results = "hold", fig.align = "center")
+```
+
+Load packages and some functions used in this analysis
+```{r load-packages, message=FALSE, warning=FALSE}
+suppressMessages(library(data.table))
+suppressMessages(library(GenomicRanges))
+suppressMessages(library(tidyverse))
+library(mapgen)
+library(ggplot2)
+library(cowplot)
+library(ggvenn)
+library(readxl)
+```
+
+Load finemapping results
+```{r}
+data.dir <- '/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/'
+finemap_torus_prior_res <- readRDS(file.path(data.dir, 'AF_finemapping_result_torusprior_122loci.rds'))
+finemap_unif_prior_res <- readRDS(file.path(data.dir, 'AF_finemapping_result_unifprior_122loci.rds'))
+```
+
+## Evaluate results from van Ouwerkerk et al., Nature Communications 2019
+
+Supplemental Table 1
+```{r load-supp-table-1}
+# Supplemental Table 1
+vanOuwerkerk_table1 <- read_excel('/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_NComm2019/41467_2019_12721_MOESM5_ESM_SupplementaryData1.xlsx', sheet = 1, skip = 2)
+cat(length(unique(vanOuwerkerk_table1$genesymbol)), 'genes in total. \n')
+
+vanOuwerkerk_table1_genescore11 <- vanOuwerkerk_table1 %>% filter(`score p<10-6` >= 11)
+cat(length(unique(vanOuwerkerk_table1_genescore11$genesymbol)), 'genes with gene score >= 11.\n')
+
+vanOuwerkerk_table1_genescore11_withinTAD <- vanOuwerkerk_table1 %>% filter(`score p<10-6` >= 11, TAD > 0)
+cat(length(unique(vanOuwerkerk_table1_genescore11_withinTAD$genesymbol)), 'genes with gene score >= 11 & within TAD.\n')
+```
+
+Supplemental Table 2
+```{r load-supp-table-2}
+vanOuwerkerk_table2 <- read_excel('/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_NComm2019/41467_2019_12721_MOESM6_ESM_SupplementaryData2.xlsx', sheet = 1, skip = 2)
+
+vanOuwerkerk_snps <- unique(vanOuwerkerk_table2$SNP[vanOuwerkerk_table2$`ATAC-seq+EMERGE peak called` >= 2])
+length(vanOuwerkerk_snps)
+```
+
+Evaluate the PIPs for reported SNPs with ATAC-seq+EMERGE peak called
+
+Functional prior
+```{r vanOuwerkerk2019-functional-pip, dev = c("png", "pdf"), fig.width=7, fig.height=4.5}
+in_finemap_res <- which(vanOuwerkerk_snps %in% finemap_torus_prior_res$snp)
+sprintf('%d out of %d SNPs in AF finemapping (functional prior) result. ', length(in_finemap_res), length(vanOuwerkerk_snps))
+
+m <- match(vanOuwerkerk_snps, finemap_torus_prior_res$snp)
+vanOuwerkerk_finemap_res <- cbind(vanOuwerkerk_SNP = vanOuwerkerk_snps, finemap_torus_prior_res[m, ])
+vanOuwerkerk_finemap_res <- na.omit(vanOuwerkerk_finemap_res)
+
+ggplot(vanOuwerkerk_finemap_res, aes(x=susie_pip)) + 
+  geom_histogram( binwidth=0.05, fill="#69b3a2", color="#e9ecef") +
+  xlab("PIP (functional prior)") +
+  ggtitle("Variants with ATAC-seq+EMERGE signals\n(van Ouwerkerk et al. 2019)") +
+  theme_cowplot()
+
+sprintf('%d SNPs in AF finemapping credible sets. ', length(which(vanOuwerkerk_finemap_res$CS>0)))
+```
+
+Uniform prior
+```{r vanOuwerkerk2019-unif-pip, dev = c("png", "pdf"), fig.width=7, fig.height=4.5}
+in_finemap_res <- which(vanOuwerkerk_snps %in% finemap_unif_prior_res$snp)
+sprintf('%d out of %d SNPs in AF finemapping (uniform prior) result. ', length(in_finemap_res), length(vanOuwerkerk_snps))
+
+m <- match(vanOuwerkerk_snps, finemap_unif_prior_res$snp)
+vanOuwerkerk_finemap_unif_res <- cbind(vanOuwerkerk_SNP = vanOuwerkerk_snps, finemap_unif_prior_res[m, ])
+vanOuwerkerk_finemap_unif_res <- na.omit(vanOuwerkerk_finemap_unif_res)
+
+ggplot(vanOuwerkerk_finemap_unif_res, aes(x=susie_pip)) + 
+  geom_histogram( binwidth=0.05, fill="#69b3a2", color="#e9ecef") +
+  xlab("PIP (uniform prior)") +
+  ggtitle("Variants with ATAC-seq+EMERGE signals\n(van Ouwerkerk et al. 2019)") +
+  theme_cowplot()
+
+sprintf('%d SNPs in AF finemapping (uniform prior) credible sets. ', length(which(vanOuwerkerk_finemap_res$CS>0)))
+```

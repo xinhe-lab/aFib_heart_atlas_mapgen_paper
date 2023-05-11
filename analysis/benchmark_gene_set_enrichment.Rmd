@@ -1,0 +1,995 @@
+---
+title: "Benchmark different methods using GO terms"
+output:
+  workflowr::wflow_html:
+    code_folding: hide
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r knitr-opts, include=FALSE}
+knitr::opts_chunk$set(results = "hold", fig.align = "center")
+```
+
+Load packages and some functions used in this analysis
+```{r load-packages, message=FALSE, warning=FALSE}
+suppressMessages(library(data.table))
+suppressMessages(library(GenomicRanges))
+suppressMessages(library(tidyverse))
+library(ggplot2)
+library(ggrepel)
+library(readr)
+library(readxl)
+library(reshape2)
+library(finemappeR)
+library(cowplot)
+library(liftOver)
+library(ggpubr)
+
+source('../R/analysis_utils.R')
+```
+
+```{r}
+extract_tissue_record <- function(record, tissue){
+  record <- grep(tissue, unlist(strsplit(record, split = "\\|")), value=TRUE)
+  record <- as.character(record)
+  return(record)
+}
+
+extract_gene_signal_record <- function(record){
+  s <- unlist(strsplit(record, split = ":"))
+  gene <- s[1]
+  signal <- s[2]
+  signal <- unlist(strsplit(signal, split = "@"))
+  signal_id <- signal[1]
+  pip <- signal[2]
+  
+  return(data.frame(gene, signal_id, pip))
+}
+
+```
+
+Settings
+```{r settings}
+data_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping"
+genomic_annots_file <- file.path(data_dir, "GWAS_gene_mapping_annots_hg19.gr.rds")
+ABC_file <- file.path(data_dir, "/ABC/Nasser2021/tissues/heart_ventricle-ENCODE_ABC.tsv.gz")
+ABC_thresh <- 0.015
+ABC_flank <- 0
+
+outdir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis"
+dir.create(outdir, showWarnings = F, recursive = T)
+```
+
+### Load data
+
+load annotations
+```{r load-annotations}
+## load annotations for linking SNPs to genes (run `clean_genomic.annotations.R` to produce)
+genomic.annots <- load_genomic_annots(genomic_annots_file)
+names(genomic.annots)[names(genomic.annots) == "HiC"] <- "pcHiC"
+gene.annots <- genomic.annots$genes
+
+# Load ABC scores
+ABC.gr <- load_ABC(ABC_file, ABC_thresh, full.element = TRUE, ABC_flank)
+ABC.gr <- ABC.gr[ABC.gr$gene_name %in% gene.annots$gene_name, ] # restrict to protein coding genes
+genomic.annots$ABC <- ABC.gr
+
+# Define enhancer regions
+genomic.annots$enhancer_regions <- genomic.annots$OCRs_hg19
+```
+
+#### Finemapping result (submitted version, with Atrium, non CM non-DA)
+Load finemapping results
+```{r load-finemapping-res-V1}
+finemap_res <- readRDS('/project2/xinhe/shared_data/aFib_gene_finemapping/aFib_Finemapped.tble.rds')
+finemap.gr <- GenomicRanges::GRanges(seqnames = finemap_res$chr, ranges = IRanges::IRanges(start = finemap_res$pos, end = finemap_res$pos))
+finemap.gr$snp <- finemap_res$snp
+finemap.gr$pip <- finemap_res$susie_pip
+finemap.gr$pval <- finemap_res$pval
+finemap.gr$cs  <- finemap_res$CS
+finemap.gr$chr <- finemap_res$chr
+finemap.gr$pos <- finemap_res$pos
+finemap.gr$locus <- finemap_res$locus
+finemap.gr$ref <- finemap_res$a0
+finemap.gr$alt <- finemap_res$a1
+seqlevelsStyle(finemap.gr) <- "UCSC"
+finemap.gr <- finemap.gr[finemap.gr$pip > 1e-5, ]
+```
+
+Load gene mapping results
+```{r load-gene-mapping-result-V1}
+genemapping_res_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_finemapping_result_12102021/"
+genemapping_res <- readRDS(file.path(genemapping_res_dir, paste0("aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds")))
+genemapping_res <- ungroup(genemapping_res)
+genemapping_res$fractional_PIP <- genemapping_res$pip * genemapping_res$frac_pip
+
+# SNP view
+snp.view.df <- fread(file.path(genemapping_res_dir, 'aFib_Finemapped_SNPView_fractionalPIP_0.02.csv')) %>% as_tibble()
+
+# Gene view
+gene.view.full.df <- genemapping_res %>%
+    dplyr::select(gene_name, gene_pip, fractional_PIP) %>%
+    group_by(gene_name) %>%
+    summarise(gene_pip = round(gene_pip[1], 3), n_snps_frac_pip_2percent = sum(fractional_PIP > 0.02))
+#     filter(gene_pip > 0.1)
+gene.view.df <- fread(file.path(genemapping_res_dir, 'aFib_Finemapped_GenePIP_0.1.csv')) %>% as_tibble()
+
+cat(sum(gene.view.df$gene_pip >= 0.8), "genes with gene PIP >= 0.8.\n")
+cat(sum(gene.view.df$gene_pip >= 0.5), "genes with gene PIP >= 0.5.\n")
+```
+
+#### Finemapping result (latest version, without Atrium, with CM non-DA)
+
+Load finemapping results
+```{r load-finemapping-res-V2}
+finemap_res_v2 <- readRDS('/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_torusprior_122loci.rds')
+finemap_v2.gr <- GenomicRanges::GRanges(seqnames = finemap_res_v2$chr, 
+                                     ranges = IRanges::IRanges(start = finemap_res_v2$pos, end = finemap_res_v2$pos))
+finemap_v2.gr$snp <- finemap_res_v2$snp
+finemap_v2.gr$pip <- finemap_res_v2$susie_pip
+finemap_v2.gr$pval <- finemap_res_v2$pval
+finemap_v2.gr$cs  <- finemap_res_v2$CS
+finemap_v2.gr$chr <- finemap_res_v2$chr
+finemap_v2.gr$pos <- finemap_res_v2$pos
+finemap_v2.gr$locus <- finemap_res_v2$locus
+finemap_v2.gr$ref <- finemap_res_v2$a0
+finemap_v2.gr$alt <- finemap_res_v2$a1
+seqlevelsStyle(finemap_v2.gr) <- "UCSC"
+finemap_v2.gr <- finemap_v2.gr[finemap_v2.gr$pip > 1e-5, ]
+```
+
+Load gene mapping results
+```{r load-gene-mapping-result-V2}
+genemapping_res_v2_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_mapping_result_latest_noAtrium_nonDA_newSuSiE/"
+genemapping_res_v2 <- readRDS(file.path(genemapping_res_v2_dir, paste0("aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds")))
+genemapping_res_v2 <- ungroup(genemapping_res_v2)
+genemapping_res_v2$fractional_PIP <- genemapping_res_v2$pip * genemapping_res_v2$frac_pip
+
+# Gene view
+gene.view.full.v2.df <- genemapping_res_v2 %>%
+    dplyr::select(gene_name, gene_pip, fractional_PIP) %>%
+    group_by(gene_name) %>%
+    summarise(gene_pip = round(gene_pip[1], 3), n_snps_frac_pip_2percent = sum(fractional_PIP > 0.02))
+#     filter(gene_pip > 0.1)
+gene.view.v2.df <- fread(file.path(genemapping_res_v2_dir, 'aFib_Finemapped_GenePIP_0.1.csv')) %>% as_tibble()
+
+cat(sum(gene.view.v2.df$gene_pip >= 0.8), "genes with gene PIP >= 0.8. \n")
+cat(sum(gene.view.v2.df$gene_pip >= 0.5), "genes with gene PIP >= 0.5. \n")
+
+# Block view
+block.view.v2.df <- fread(file.path(genemapping_res_v2_dir, 'aFib_Finemapped_LDBlockView_Nielsen_V2.csv'))
+block.view.df <- block.view.v2.df
+```
+
+### Candidate gene lists
+
+Nearest gene for the top SNP in each locus
+```{r nearest-genes-2}
+gwas.gr <- GenomicRanges::GRanges(seqnames = finemap_res$chr, ranges = IRanges::IRanges(start = finemap_res$pos, end = finemap_res$pos))
+gwas.gr$snp <- finemap_res$snp
+gwas.gr$pval <- finemap_res$pval
+gwas.gr$zscore <- finemap_res$zscore
+gwas.gr$locus <- finemap_res$locus
+seqlevelsStyle(gwas.gr) <- "UCSC"
+gwas.gr <- gwas.gr[order(abs(gwas.gr$zscore), decreasing = T), ]
+top.snps.gr <- gwas.gr[!duplicated(gwas.gr$locus), ]
+
+# nearest gene body
+nearest_genebody_genes.gr <- find_nearest_genes(top.snps.gr, gene.annots, dist.to = "genebody")
+nearest_genebody_genes <- unlist(strsplit(nearest_genebody_genes.gr$nearest_gene, split = ","))
+
+# nearest TSS
+nearest_tss_genes.gr <- find_nearest_genes(top.snps.gr, gene.annots, dist.to = "tss")
+nearest_tss_genes <- unlist(strsplit(nearest_tss_genes.gr$nearest_gene, split = ","))
+```
+
+ABC-max (use the genes with the highest ABC scores)
+```{r ABC-max}
+# Load ABC scores
+ABC_file <- file.path(data_dir, "/ABC/Nasser2021/tissues/heart_ventricle-ENCODE_ABC.tsv.gz")
+ABC.gr <- load_ABC(ABC_file, full.element = TRUE)
+ABC.gr <- ABC.gr[ABC.gr$gene_name %in% gene.annots$gene_name, ] # restrict to protein coding genes
+
+# Overlap finemapped SNPs with ABC 
+snps.overlap.ABC.gr <- plyranges::join_overlap_inner(x = top.snps.gr, y = ABC.gr)
+locus_topsnp_ABCall.df <- snps.overlap.ABC.gr %>% as_tibble() %>% dplyr::select(locus, snp, gene_name, ABC.Score)
+locus_topsnp_ABCmax.df <- locus_topsnp_ABCall.df %>% arrange(locus, desc(ABC.Score)) %>% distinct(snp, .keep_all = TRUE)
+
+cat("Genes identified by ABC-max: \n")
+print(locus_topsnp_ABCmax.df)
+```
+
+topSNPs eQTL genes (GTEx v8 eQTL data)
+```{r eQTL, message=FALSE, warning=FALSE}
+#  (Run R/prepare_eQTL_for_gwas_overlap.R to prepare)
+# eqtls <- fread('/project2/gca/aselewa/heart_atlas_project/eQTL_enrich/summary_statistics/signifcant_summary_stats_v8/Heart_Left_Ventricle.v8.signif_variant_gene_pairs.txt.gz')
+eqtls.gr.hg19 <- readRDS('/project2/gca/aselewa/heart_atlas_project/misc/V8_Signif_eQTLs_lifted_hg19.rds')
+eqtls.gr.hg19.df <- eqtls.gr.hg19 %>% 
+  as_tibble() %>% 
+  mutate(varID = paste0(seqnames,'_',start)) %>% 
+  filter(!is.na(Symbol)) %>%
+  dplyr::select(varID, Symbol) %>% 
+  dplyr::rename(eQTL_Symbol=Symbol) %>%
+  group_by(varID) %>% 
+  summarise(eQTL_Symbols=paste0(eQTL_Symbol, collapse=';'))
+
+top.snps.df <- as_tibble(top.snps.gr) %>% 
+           dplyr::rename(chr = seqnames, pos = start) %>% 
+           mutate(chr = gsub("chr", "", chr)) %>% 
+           dplyr::select(chr, pos, snp, pval, zscore, locus)
+           
+top.snps.df <- top.snps.df %>% mutate(varID = paste0(chr,'_',pos)) %>% left_join(., eqtls.gr.hg19.df) %>% dplyr::select(-varID)
+top_snps_eQTL_genes <- unique(unlist(strsplit(as.character(na.omit(top.snps.df$eQTL_Symbols)), split = ";")))
+cat(length(top_snps_eQTL_genes), "eQTL genes associated with the top SNPs.\n")
+```
+
+finemapping result from DAP-G (GTEx v8 eQTL data)
+```{r eQTL-finemapping, eval=FALSE}
+# finemapping_eQTLs <- fread('/project2/xinhe/shared_data/GTEx/eQTL/finemapping/GTEx_v8_finemapping_DAPG/GTEx_v8_finemapping_DAPG.txt.gz')
+# finemapping_eQTLs <- finemapping_eQTLs %>% filter(tissue_id == "Heart_Left_Ventricle")
+# saveRDS(finemapping_eQTLs, '/project2/xinhe/shared_data/GTEx/eQTL/finemapping/GTEx_v8_finemapping_DAPG/Heart_Left_Ventricle_v8_finemapping_DAPG.rds')
+
+dapG_finemapping_CS <- fread('/project2/xinhe/shared_data/GTEx/eQTL/finemapping/GTEx_v8_finemapping_DAPG/GTEx_v8_finemapping_DAPG.CS95.txt.gz', sep = '\t')
+dapG_heart_CS <- dapG_finemapping_CS[grep("Heart_Left_Ventricle", dapG_finemapping_CS$V6),]
+
+dapG_heart_CS$V6 <- sapply(dapG_heart_CS$V6, extract_tissue_record, "Heart_Left_Ventricle")
+dapG_heart_CS2 <- dapG_heart_CS
+dapG_heart_CS$V6 <- gsub("Heart_Left_Ventricle=", "", dapG_heart_CS$V6)
+dapG_heart_CS_test <- dapG_heart_CS[1:5,]
+dapG_heart_CS <- cbind(dapG_heart_CS, t(sapply(dapG_heart_CS$V6, extract_gene_signal_record)))
+colnames(dapG_heart_CS) <- c("chr", "pos", "snp", "ref", "alt", "record", "gene", "signal_id", "pip")
+saveRDS(dapG_heart_CS, '/project2/xinhe/shared_data/GTEx/eQTL/finemapping/GTEx_v8_finemapping_DAPG/Heart_Left_Ventricle_v8_finemapping_DAPG_CS95.rds')
+
+dapG_heart_CS <- dapG_heart_CS[, c("chr", "pos", "snp", "ref", "alt", "gene", "signal_id", "pip")]
+dapG_heart_CS$gene <- gsub('[.].*', '', dapG_heart_CS$gene)
+dapG_heart_CS$chr <- paste0("chr", dapG_heart_CS$chr)
+dapG_cs.gr <- makeGRangesFromDataFrame(dapG_heart_CS, start.field = "pos", end.field = "pos", keep.extra.columns = TRUE)
+dapG_cs_hg19.gr <- hg38ToHg19(dapG_cs.gr)
+
+gene.annots <- readRDS('/project2/gca/aselewa/heart_atlas_project/genomic_annotations/hg19_gtf_genomic_annots.gr.rds')$genes
+gene.annots$gene_id_clean <- sub(pattern = '[.].*', '', gene.annots$gene_id)
+dapG_cs_hg19.gr$Symbol <- gene.annots$gene_name[match(dapG_cs_hg19.gr$gene, gene.annots$gene_id_clean)]
+seqlevelsStyle(dapG_cs_hg19.gr) <- "NCBI"
+saveRDS(dapG_cs_hg19.gr, '/project2/xinhe/shared_data/GTEx/eQTL/finemapping/GTEx_v8_finemapping_DAPG/Heart_Left_Ventricle_v8_finemapping_DAPG_CS95_hg19.gr.rds')
+```
+
+```{r eQTL-finemapping-2}
+dapG_cs_hg19.gr <- readRDS('/project2/xinhe/shared_data/GTEx/eQTL/finemapping/GTEx_v8_finemapping_DAPG/Heart_Left_Ventricle_v8_finemapping_DAPG_CS95_hg19.gr.rds')
+seqlevelsStyle(dapG_cs_hg19.gr) <- "UCSC"
+
+gwas.gr <- GenomicRanges::GRanges(seqnames = finemap_res$chr, ranges = IRanges::IRanges(start = finemap_res$pos, end = finemap_res$pos))
+gwas.gr$snp <- finemap_res$snp
+gwas.gr$pval <- finemap_res$pval
+gwas.gr$zscore <- finemap_res$zscore
+gwas.gr$locus <- finemap_res$locus
+seqlevelsStyle(gwas.gr) <- "UCSC"
+
+dapG_cs_hg19_locus.gr <- plyranges::join_overlap_inner(x = dapG_cs_hg19.gr, y = gwas.gr)
+x <- which(countOverlaps(dapG_cs_hg19.gr, gwas.gr) > 0)
+
+dapG_cs_hg19_locus.df <- as_tibble(dapG_cs_hg19_locus.gr) %>% na.omit()
+dapG_cs_hg19_locus_genesymbol.df <- dapG_cs_hg19_locus.df %>% 
+  distinct(locus, Symbol) %>% 
+  dplyr::rename(gene_in_CS = Symbol) %>% 
+  dplyr::select(locus, gene_in_CS) 
+```
+
+
+Target genes from allele specific STARR-seq of AF variants & PC-HiC from van Ouwerkerk et al., Circ Res 2020 (Supplemental Table VII, Target genes of variant enhancers)
+```{r STARR-seq-van-Ouwerkerk-CircRes-2020}
+vanOuwerkerk_table7 <- read_excel('/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_CircRes2020/vanOuwerkerk_CircRes2020_tables.xlsx', sheet = "Table VII", skip = 1)
+
+vanOuwerkerk_CircRes2020_genes <- unique(vanOuwerkerk_table7$target_gene)
+cat('Load', length(vanOuwerkerk_CircRes2020_genes), 'target genes identified by van Ouwerkerk et al., Circ Res 2020 \n')
+```
+
+Target genes (gene score >= 11) from van Ouwerkerk et al., Nature Communications 2019
+```{r vanOuwerkerk_NComm2019_genes}
+vanOuwerkerk_NComm2019_table1 <- read_excel('/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_NComm2019/41467_2019_12721_MOESM5_ESM_SupplementaryData1.xlsx', sheet = 1, skip = 2)
+cat(length(unique(vanOuwerkerk_NComm2019_table1$genesymbol)), 'genes in total. \n')
+
+vanOuwerkerk_table1_genescore11 <- vanOuwerkerk_NComm2019_table1 %>% filter(`score p<10-6` >= 11)
+vanOuwerkerk_NComm2019_genes <- unique(vanOuwerkerk_table1_genescore11$genesymbol)
+cat(length(vanOuwerkerk_NComm2019_genes), 'genes with gene score >= 11.\n')
+```
+
+MAGMA genes 
+```{r magma_genes}
+magma.sumstats <- fread('/project2/xinhe/shared_data/aFib_gene_finemapping/magma/magma.genes.out')
+magma.sumstats$p.adj <- p.adjust(magma.sumstats$P, method = 'bonferroni')
+magma.gene.loc <- fread('/project2/xinhe/kevinluo/magma/aux_files/gene.locations/NCBI37/NCBI37.3.gene.loc')
+colnames(magma.gene.loc) <- c('gene_ID', 'chr', 'start', 'end', 'strand', 'gene_symbol')
+magma.sumstats$gene_symbol <- magma.gene.loc[match(magma.sumstats$GENE, magma.gene.loc$gene_ID), 'gene_symbol']
+
+magma_genes <- unique(magma.sumstats$gene_symbol[magma.sumstats$p.adj < 0.05])
+cat(length(magma_genes), 'genes with Bonferroni adjusted p < 0.05 from MAGMA analysis.\n')
+```
+
+Silver standard gene list from Xin
+```{r silver-standard-genes}
+library(readxl)
+candidate_gene_table <- readxl::read_excel(file.path(data_dir, "AF_candidate_genes.xlsx"))
+silver_standard_genes <- str_trim(unlist(strsplit(na.omit(candidate_gene_table$Candidates), split = ",")))
+cat(length(unique(silver_standard_genes)), 'silver standard genes in total. \n')
+```
+
+### GO terms
+
+Load the DEPICT gene set enrichment result from Nielsen et al. paper
+```{r depict-GO}
+depict_tabl <- read_excel("/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/Nielsen_suppl_tables.xlsx", sheet = "ST7-DEPICT-geneset-enrichment", skip = 1, col_names = TRUE)
+
+depict_tabl <- depict_tabl %>% dplyr::rename("Genes" = "Genes (*if no significant genes [P<1e-6], the 3 most significant genes are listed)")
+
+count_genes <- function(genes_str){
+  genes <- unlist(strsplit(genes_str, split = "\\|"))
+  if("*" %in% genes){
+    N.genes <- 0
+  }else{
+    N.genes <- length(unique(genes))
+  }
+  return(N.genes)
+}
+depict_tabl$N.genes <- sapply(depict_tabl$Genes, count_genes)
+
+# depict_GO_tabl <- depict_tabl %>% filter(grepl("^GO:", `Gene set ID`), `FDR < 5%` == "Yes", `N.genes` >= 5)
+# openxlsx::write.xlsx(depict_GO_tabl, file = "/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/Nielsen_selected_GO_terms_FDR_5genes.xlsx")
+
+depict_GO_tabl <- depict_tabl %>% filter(grepl("^GO:", `Gene set ID`))
+openxlsx::write.xlsx(depict_GO_tabl, file = "/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/Nielsen_GO_terms.xlsx")
+cat(nrow(depict_GO_tabl), "GO terms included. \n")
+
+filtered_depict_GO_tabl <- depict_tabl %>% filter(grepl("^GO:", `Gene set ID`), `FDR < 5%` == "Yes", `N.genes` >= 3)
+# openxlsx::write.xlsx(filtered_depict_GO_tabl, file = "/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/Nielsen_selected_GO_terms_FDR_3genes.xlsx")
+cat(nrow(filtered_depict_GO_tabl), "GO terms (with FDR and N.genes cutoffs) included. \n")
+```
+
+GO annotation database
+```{r GO-database}
+GO_annots_tabl <- fread("grep -v '^!' /project2/xinhe/shared_data/gene_ontology/annotations/goa_human.gaf", sep = "\t")
+colnames(GO_annots_tabl) <- c("DB", "Object_ID", "Object_Symbol", "Qualifier", "GO_ID", "DB_Reference", "Evidence_Code",
+                              "With_From", "Aspect", "Object_Name", "Object_Synonym", "Object_Type", "Taxon", "Date", "Assigned_By",
+                              "Annotation_Extension", "Gene_Product_Form_ID")
+# saveRDS(GO_annots_tabl, "/project2/xinhe/shared_data/gene_ontology/annotations/goa_human.rds")
+```
+
+Extract genes associated with the selected GO terms
+```{r selected-GO-genes}
+selected_GO_term_gene_list <- vector("list", length(filtered_depict_GO_tabl$`Gene set ID`))
+names(selected_GO_term_gene_list) <- filtered_depict_GO_tabl$`Gene set ID`
+
+for(GO_term in names(selected_GO_term_gene_list)){
+  selected_GO_term_gene_list[[GO_term]] <- GO_annots_tabl %>% 
+    filter(GO_ID == GO_term, Object_Type == "protein") %>% 
+    dplyr::select(Object_Symbol, Object_Type, Object_Synonym, Object_Name)
+}
+
+selected_GO_term_genes.df <- do.call(rbind, selected_GO_term_gene_list)
+selected_GO_term_genes <- selected_GO_term_genes.df$Object_Symbol
+selected_GO_term_genes_synonyms <- unlist(strsplit(selected_GO_term_genes.df$Object_Synonym, split = "\\|"))
+```
+
+Extract genes associated with all GO terms
+```{r all-GO-genes}
+GO_term_gene_list <- vector("list", length(depict_GO_tabl$`Gene set ID`))
+names(GO_term_gene_list) <- depict_GO_tabl$`Gene set ID`
+
+for(GO_term in names(GO_term_gene_list)){
+  GO_term_gene_list[[GO_term]] <- GO_annots_tabl %>% 
+    filter(GO_ID == GO_term, Object_Type == "protein") %>% 
+    dplyr::select(Object_Symbol, Object_Type, Object_Synonym, Object_Name)
+}
+
+GO_term_genes.df <- do.call(rbind, GO_term_gene_list)
+GO_term_genes <- GO_term_genes.df$Object_Symbol
+GO_term_genes_synonyms <- unlist(strsplit(GO_term_genes.df$Object_Synonym, split = "\\|"))
+```
+
+
+Get a table of the GO terms for high PIP (gene PIP >= 0.8) genes 
+```{r GO-highPIP-genes}
+high_pip_gene_view.df <- gene.view.df[gene.view.df$gene_pip >= 0.8, c("gene_name", "gene_pip")]
+
+GO_annots.df <- GO_annots_tabl %>% 
+  dplyr::rename(Gene_ID = Object_ID, Gene_Symbol = Object_Symbol, Gene_Name = Object_Name) %>% 
+  dplyr::select(Gene_Symbol, GO_ID)
+
+high_pip_gene_GO.df <- high_pip_gene_view.df
+high_pip_gene_GO.df$GO_ID <- ""
+high_pip_gene_GO.df$Description <- ""
+for(i in 1:nrow(high_pip_gene_GO.df)){
+  curr_gene <- high_pip_gene_GO.df$gene_name[i]
+  curr_GO_IDs <- unique(GO_annots.df[GO_annots.df$Gene_Symbol == curr_gene,]$GO_ID)
+  curr_depict_GO_terms <- filtered_depict_GO_tabl[which(filtered_depict_GO_tabl$`Gene set ID` %in% curr_GO_IDs), 1:2]
+  high_pip_gene_GO.df$GO_ID[i] <- paste(curr_depict_GO_terms$`Gene set ID`, collapse = ";")
+  high_pip_gene_GO.df$Description[i] <- paste(curr_depict_GO_terms$`Description`, collapse = ";")
+}
+# openxlsx::write.xlsx(high_pip_gene_GO.df, file = "/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/high_pip_gene_GO.xlsx")
+```
+
+using DEPICT GO terms with p < 0.05 (without filtering on FDR and # genes)
+```{r DEPICT-GO-highPIP-genes}
+high_pip_gene_view.df <- gene.view.df[gene.view.df$gene_pip >= 0.8, c("gene_name", "gene_pip")]
+
+GO_annots.df <- GO_annots_tabl %>% 
+  dplyr::rename(Gene_ID = Object_ID, Gene_Symbol = Object_Symbol, Gene_Name = Object_Name) %>% 
+  select(Gene_Symbol, GO_ID)
+
+high_pip_gene_GO.df <- high_pip_gene_view.df
+high_pip_gene_GO.df$GO_ID <- ""
+high_pip_gene_GO.df$Description <- ""
+for(i in 1:nrow(high_pip_gene_GO.df)){
+  curr_gene <- high_pip_gene_GO.df$gene_name[i]
+  curr_GO_IDs <- unique(GO_annots.df[GO_annots.df$Gene_Symbol == curr_gene,]$GO_ID)
+  curr_depict_GO_terms <- depict_tabl[which(depict_tabl$`Gene set ID` %in% curr_GO_IDs), 1:2]
+  high_pip_gene_GO.df$GO_ID[i] <- paste(curr_depict_GO_terms$`Gene set ID`, collapse = ";")
+  high_pip_gene_GO.df$Description[i] <- paste(curr_depict_GO_terms$`Description`, collapse = ";")
+}
+# openxlsx::write.xlsx(high_pip_gene_GO.df, file = "/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/high_pip_gene_GO_DEPICTp0.05.xlsx")
+```
+
+
+### Summary of the number of genes selected by each method that are in selected GO terms
+
+Fraction of nearest genes (nearest gene body) in selected GO terms
+```{r summary-nearest-genebody-genes}
+cat(sprintf("%d out of %d (%.2f %%) nearest genes (nearest gene body) are in the selected GO terms.\n", 
+    length(which(nearest_genebody_genes %in% selected_GO_term_genes)),
+    length(nearest_genebody_genes),
+    length(which(nearest_genebody_genes %in% selected_GO_term_genes)) / length(nearest_genebody_genes) * 100 ))
+
+cat(sprintf("%d out of %d (%.2f %%) nearest genes (nearest gene body) are in the GO terms with p < 0.05.\n", 
+    length(which(nearest_genebody_genes %in% GO_term_genes)),
+    length(nearest_genebody_genes),
+    length(which(nearest_genebody_genes %in% GO_term_genes)) / length(nearest_genebody_genes) * 100 ))
+```
+
+
+Fraction of nearest genes (nearest TSS) in selected GO terms
+```{r summary-nearest-tss-genes}
+cat(sprintf("%d out of %d (%.2f %%) nearest genes (nearest TSS) are in the selected GO terms.\n", 
+    length(which(nearest_tss_genes %in% selected_GO_term_genes)),
+    length(nearest_tss_genes),
+    length(which(nearest_tss_genes %in% selected_GO_term_genes)) / length(nearest_tss_genes) * 100 ))
+
+cat(sprintf("%d out of %d (%.2f %%) nearest genes (nearest TSS) are in the GO terms with p < 0.05.\n", 
+    length(which(nearest_tss_genes %in% GO_term_genes)),
+    length(nearest_tss_genes),
+    length(which(nearest_tss_genes %in% GO_term_genes)) / length(nearest_tss_genes) * 100 ))
+```
+
+Fraction of high PIP genes (with gene PIP > 0.8) in selected GO terms (submitted version)
+```{r summary-highPIP-genes}
+high_pip_genes <- gene.view.df[gene.view.df$gene_pip >= 0.8, ]$gene_name
+cat(sprintf("%d out of %d (%.2f %%) genes with high PIP (>=0.8) are in the selected GO terms.\n", 
+    length(which(high_pip_genes %in% selected_GO_term_genes)),
+    length(high_pip_genes),
+    length(which(high_pip_genes %in% selected_GO_term_genes)) / length(high_pip_genes) * 100))
+
+cat(sprintf("%d out of %d (%.2f %%) genes with high PIP (>=0.8) are in the GO terms with p < 0.05.\n", 
+    length(which(high_pip_genes %in% GO_term_genes)),
+    length(high_pip_genes),
+    length(which(high_pip_genes %in% GO_term_genes)) / length(high_pip_genes) * 100))
+```
+
+Fraction of high PIP genes (with gene PIP > 0.8) in selected GO terms (new version, no Atrium, with CM non-DA)
+
+```{r summary-highPIP-genes_v2}
+high_pip_genes_v2 <- gene.view.v2.df[gene.view.v2.df$gene_pip >= 0.8, ]$gene_name
+cat(sprintf("%d out of %d (%.2f %%) genes with new version high PIP (>=0.8) are in the selected GO terms.\n", 
+    length(which(high_pip_genes_v2 %in% selected_GO_term_genes)),
+    length(high_pip_genes_v2),
+    length(which(high_pip_genes_v2 %in% selected_GO_term_genes)) / length(high_pip_genes_v2) * 100))
+
+cat(sprintf("%d out of %d (%.2f %%) genes with new version high PIP (>=0.8) are in the GO terms with p < 0.05.\n", 
+    length(which(high_pip_genes_v2 %in% GO_term_genes)),
+    length(high_pip_genes_v2),
+    length(which(high_pip_genes_v2 %in% GO_term_genes)) / length(high_pip_genes_v2) * 100))
+```
+
+
+Fraction of gene with PIP >= 0.5 in selected GO terms (submitted version)
+```{r summary-midPIP-genes}
+mid_pip_genes <- gene.view.df[gene.view.df$gene_pip >= 0.5, ]$gene_name
+cat(sprintf("%d out of %d (%.2f %%) genes with gene PIP (>=0.5) are in selected GO terms.\n", 
+    length(which(mid_pip_genes %in% selected_GO_term_genes)),
+    length(mid_pip_genes),
+    length(which(mid_pip_genes %in% selected_GO_term_genes)) / length(mid_pip_genes) * 100))
+
+cat(sprintf("%d out of %d (%.2f %%) genes with gene PIP (>=0.5) are in the GO terms with p < 0.05. \n", 
+    length(which(mid_pip_genes %in% GO_term_genes)),
+    length(mid_pip_genes),
+    length(which(mid_pip_genes %in% GO_term_genes)) / length(mid_pip_genes) * 100))
+```
+
+
+Fraction of gene with PIP >= 0.5 in selected GO terms (new version, no Atrium, with CM non-DA)
+```{r summary-midPIP-genes-v2}
+mid_pip_genes_v2 <- gene.view.v2.df[gene.view.v2.df$gene_pip >= 0.5, ]$gene_name
+cat(sprintf("%d out of %d (%.2f %%) genes with gene PIP (>=0.5) are in selected GO terms.\n", 
+    length(which(mid_pip_genes_v2 %in% selected_GO_term_genes)),
+    length(mid_pip_genes_v2),
+    length(which(mid_pip_genes_v2 %in% selected_GO_term_genes)) / length(mid_pip_genes_v2) * 100))
+
+cat(sprintf("%d out of %d (%.2f %%) genes with gene PIP (>=0.5) are in the GO terms with p < 0.05. \n", 
+    length(which(mid_pip_genes_v2 %in% GO_term_genes)),
+    length(mid_pip_genes_v2),
+    length(which(mid_pip_genes_v2 %in% GO_term_genes)) / length(mid_pip_genes_v2) * 100))
+```
+
+
+
+```{r summary-gene-cs}
+geneCS_genes <- unlist(strsplit(block.view.df$`80% Gene Credible Set`, split = ","))
+cat(sprintf("%d out of %d (%.2f %%) genes in Gene Credible Set are in selected GO terms.\n", 
+    length(which(geneCS_genes %in% selected_GO_term_genes)),
+    length(geneCS_genes),
+    length(which(geneCS_genes %in% selected_GO_term_genes)) / length(geneCS_genes) * 100))
+
+cat(sprintf("%d out of %d (%.2f %%) genes in Gene Credible Set are in the GO terms with p < 0.05. \n", 
+    length(which(geneCS_genes %in% GO_term_genes)),
+    length(geneCS_genes),
+    length(which(geneCS_genes %in% GO_term_genes)) / length(geneCS_genes) * 100))
+```
+
+Fraction of ABC-max genes in selected GO terms
+```{r summary-ABC-max}
+ABCmax_genes <- locus_topsnp_ABCmax.df$gene_name
+cat(sprintf("%d out of %d (%.2f %%) ABC-max genes are in selected GO terms.\n", 
+    length(which(ABCmax_genes %in% selected_GO_term_genes)),
+    length(ABCmax_genes),
+    length(which(ABCmax_genes %in% selected_GO_term_genes)) / length(ABCmax_genes) * 100))
+
+cat(sprintf("%d out of %d (%.2f %%) ABC-max genes are in the GO terms with p < 0.05.\n", 
+    length(which(ABCmax_genes %in% GO_term_genes)),
+    length(ABCmax_genes),
+    length(which(ABCmax_genes %in% GO_term_genes)) / length(ABCmax_genes) * 100))
+```
+
+
+Fraction of topSNP eQTL genes in selected GO terms
+```{r summary-top-eQTL}
+cat(sprintf("%d out of %d (%.2f %%) eQTL genes of top SNPs are in selected GO terms.\n", 
+    length(which(top_snps_eQTL_genes %in% selected_GO_term_genes)),
+    length(top_snps_eQTL_genes),
+    length(which(top_snps_eQTL_genes %in% selected_GO_term_genes)) / length(top_snps_eQTL_genes) * 100))
+
+cat(sprintf("%d out of %d (%.2f %%) eQTL genes of top SNPs are in the GO terms with p < 0.05.\n", 
+    length(which(top_snps_eQTL_genes %in% GO_term_genes)),
+    length(top_snps_eQTL_genes),
+    length(which(top_snps_eQTL_genes %in% GO_term_genes)) / length(top_snps_eQTL_genes) * 100))
+```
+
+
+Fraction of finemapped eQTL CS genes in selected GO terms
+```{r summary-finemapped-eQTL-CS}
+dapG_cs_genes <- dapG_cs_hg19_locus_genesymbol.df$gene_in_CS
+cat(sprintf("%d out of %d (%.2f %%) finemapped genes (in DAP-G CS) are in selected GO terms.\n", 
+    length(which(dapG_cs_genes %in% selected_GO_term_genes)),
+    length(dapG_cs_genes),
+    length(which(dapG_cs_genes %in% selected_GO_term_genes)) / length(dapG_cs_genes) * 100))
+
+cat(sprintf("%d out of %d (%.2f %%) finemapped genes (in DAP-G CS) are in the GO terms with p < 0.05.\n", 
+    length(which(dapG_cs_genes %in% GO_term_genes)),
+    length(dapG_cs_genes),
+    length(which(dapG_cs_genes %in% GO_term_genes)) / length(dapG_cs_genes) * 100))
+```
+
+
+Fraction of target genes from van Ouwerkerk et al., NComm 2019 (Supplemental Table 1, gene score >= 11)
+```{r summary-vanOuwerkerk-NComm2019-target-genes}
+cat(sprintf("%d out of %d (%.2f %%) van Ouwerkerk et al., NComm 2019 genes are in the selected GO terms.\n", 
+    length(which(vanOuwerkerk_NComm2019_genes %in% selected_GO_term_genes)),
+    length(vanOuwerkerk_NComm2019_genes),
+    length(which(vanOuwerkerk_NComm2019_genes %in% selected_GO_term_genes)) / length(vanOuwerkerk_NComm2019_genes) * 100 ))
+
+cat(sprintf("%d out of %d (%.2f %%) van Ouwerkerk et al., NComm 2019 genes are in the GO terms with p < 0.05.\n", 
+    length(which(vanOuwerkerk_NComm2019_genes %in% GO_term_genes)),
+    length(vanOuwerkerk_NComm2019_genes),
+    length(which(vanOuwerkerk_NComm2019_genes %in% GO_term_genes)) / length(vanOuwerkerk_NComm2019_genes) * 100 ))
+```
+
+Fraction of MAGMA genes (Bonferroni adjusted p-value < 0.05)
+```{r summary-magma-genes}
+cat(sprintf("%d out of %d (%.2f %%) MAGMA genes are in the selected GO terms.\n", 
+    length(which(magma_genes %in% selected_GO_term_genes)),
+    length(magma_genes),
+    length(which(magma_genes %in% selected_GO_term_genes)) / length(vanOuwerkerk_NComm2019_genes) * 100 ))
+
+cat(sprintf("%d out of %d (%.2f %%) MAGMA genes are in the GO terms with p < 0.05.\n", 
+    length(which(magma_genes %in% GO_term_genes)),
+    length(magma_genes),
+    length(which(magma_genes %in% GO_term_genes)) / length(vanOuwerkerk_NComm2019_genes) * 100 ))
+```
+
+Fraction of silver standard genes (curated by Xin)
+```{r summary-silver-standard-genes}
+cat(sprintf("%d out of %d (%.2f %%) silver standard genes are in the selected GO terms.\n", 
+    length(which(silver_standard_genes %in% selected_GO_term_genes)),
+    length(silver_standard_genes),
+    length(which(silver_standard_genes %in% selected_GO_term_genes)) / length(silver_standard_genes) * 100 ))
+
+cat(sprintf("%d out of %d (%.2f %%) silver standard genes are in the GO terms with p < 0.05.\n", 
+    length(which(silver_standard_genes %in% GO_term_genes)),
+    length(silver_standard_genes),
+    length(which(silver_standard_genes %in% GO_term_genes)) / length(silver_standard_genes) * 100 ))
+```
+
+Fraction of target genes from allele specific STARR-seq of AF variants & PC-HiC from van Ouwerkerk et al., Circ Res 2020 (Supplemental Table VII, Target genes of variant enhancers)
+```{r summary-STARR-seq-vanOuwerkerk-CircRes2020-target-genes}
+cat(sprintf("%d out of %d (%.2f %%) nearest genes are in the selected GO terms.\n", 
+    length(which(vanOuwerkerk_CircRes2020_genes %in% selected_GO_term_genes)),
+    length(vanOuwerkerk_CircRes2020_genes),
+    length(which(vanOuwerkerk_CircRes2020_genes %in% selected_GO_term_genes)) / length(vanOuwerkerk_CircRes2020_genes) * 100 ))
+
+print(vanOuwerkerk_CircRes2020_genes[which(vanOuwerkerk_CircRes2020_genes %in% selected_GO_term_genes)])
+
+
+cat(sprintf("%d out of %d (%.2f %%) nearest genes are in the GO terms with p < 0.05.\n", 
+    length(which(vanOuwerkerk_CircRes2020_genes %in% GO_term_genes)),
+    length(vanOuwerkerk_CircRes2020_genes),
+    length(which(vanOuwerkerk_CircRes2020_genes %in% GO_term_genes)) / length(vanOuwerkerk_CircRes2020_genes) * 100 ))
+
+vanOuwerkerk_CircRes2020_genes[which(vanOuwerkerk_CircRes2020_genes %in% GO_term_genes)]
+
+```
+
+
+```{r summary-table}
+nominated_genes.l <- list(`nearest genebody` = nearest_genebody_genes,
+                          `nearest tss` = nearest_tss_genes,
+                          ABCmax= locus_topsnp_ABCmax.df$gene_name,
+                          `eQTL` = top_snps_eQTL_genes, 
+                          `finemapped eQTL` = dapG_cs_genes, 
+                          PIP0.5 = gene.view.df[gene.view.df$gene_pip >= 0.5, ]$gene_name,
+                          PIP0.5V2 = gene.view.v2.df[gene.view.v2.df$gene_pip >= 0.5, ]$gene_name,
+                          PIP0.8 = gene.view.df[gene.view.df$gene_pip >= 0.8, ]$gene_name,
+                          PIP0.8V2 = gene.view.v2.df[gene.view.v2.df$gene_pip >= 0.8, ]$gene_name,
+                          geneCS = geneCS_genes,
+                          `STARR-seq` = vanOuwerkerk_CircRes2020_genes,
+                          `vanOuwerkerk_NComm2019` = vanOuwerkerk_NComm2019_genes,
+                          `MAGMA` = magma_genes,
+                          `silver_standard` = silver_standard_genes)
+
+genes_in_GO_terms.df <- data.frame()
+for(i in 1:length(nominated_genes.l)){
+  nominated_genes <- nominated_genes.l[[i]]
+  n_nominated_genes <- length(nominated_genes)
+  n_genes_GO_terms_fdr0.05 <- length(which(nominated_genes %in% selected_GO_term_genes))
+  n_genes_GO_terms_p0.05 <- length(which(nominated_genes %in% GO_term_genes))
+  prop_genes_GO_terms_fdr0.05 <- n_genes_GO_terms_fdr0.05/n_nominated_genes
+  prop_genes_GO_terms_p0.05 <- n_genes_GO_terms_p0.05/n_nominated_genes
+  genes_in_GO_terms.df <- rbind(genes_in_GO_terms.df, 
+                                data.frame(method = names(nominated_genes.l)[i],
+                                           n_nominated_genes = n_nominated_genes, 
+                                           n_genes_GO_terms_fdr0.05 = n_genes_GO_terms_fdr0.05,
+                                           n_genes_GO_terms_p0.05 = n_genes_GO_terms_p0.05,
+                                           prop_genes_GO_terms_fdr0.05 = round(prop_genes_GO_terms_fdr0.05,2),
+                                           prop_genes_GO_terms_p0.05 = round(prop_genes_GO_terms_p0.05,2)))
+}
+
+print(genes_in_GO_terms.df)
+```
+
+```{r barplot_prop_GO_terms, fig.width=14, fig.height=6}
+df <- genes_in_GO_terms.df %>% 
+  dplyr::select(method, prop_genes_GO_terms_fdr0.05, prop_genes_GO_terms_p0.05) %>%
+  dplyr::rename(fdr0.05 = prop_genes_GO_terms_fdr0.05, pvalue0.05 = prop_genes_GO_terms_p0.05)
+
+df <- melt(df[,c("method", "fdr0.05", "pvalue0.05")], 
+           id.vars = c("method"), variable.name = "GO_enrich_cutoff", value.name = "prop")
+
+ggbarplot(df, x = "method", "prop",
+  fill = "GO_enrich_cutoff", color = "GO_enrich_cutoff", palette = "Paired",
+  label = TRUE,
+  xlab = "", 
+  ylab = "Proportion of genes in selected GO terms",
+  position = position_dodge(0.9)) +
+  theme(legend.position = c(0.15, 0.9),
+        legend.title=element_blank(), 
+        legend.text = element_text(colour="black", size = 14),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 12))
+```
+
+```{r barplot-plausible-FP-genes, fig.width=12, fig.height=6}
+summary_tabl <- genes_in_GO_terms.df %>% 
+  dplyr::select(method, n_nominated_genes, n_genes_GO_terms_fdr0.05) %>%
+  dplyr::rename(plausible = n_genes_GO_terms_fdr0.05) %>%
+  dplyr::mutate(FP = n_nominated_genes - plausible,
+                precision = plausible/n_nominated_genes)
+
+df <- melt(summary_tabl[,c("method", "plausible", "FP")], 
+           id.vars = c("method"), variable.name = "category", value.name = "No.genes")
+# df$method <- gsub("_genes", "", df$method)
+df$method <- factor(df$method)
+levels(df$method) <- list("Old Mapgen (PIP >= 0.8)" = "PIP0.8", 
+                          "Mapgen (PIP >= 0.8)" = "PIP0.8V2", 
+                          "Old Mapgen (PIP >= 0.5)" = "PIP0.5",
+                          "Mapgen (PIP >= 0.5)" = "PIP0.5V2",
+                          "80% gene CS" = "geneCS",
+                          "nearest gene body" = "nearest genebody", 
+                          "nearest gene" = "nearest tss", 
+                          "ABC-max" = "ABCmax", 
+                          "eQTL" = "eQTL",
+                          "finemapped eQTL CS" = "finemapped eQTL",
+                          "STARR-seq\nvan Ouwerkerk\nCircRes 2020" = "STARR-seq",
+                          "van Ouwerkerk\nNComm 2019" = "vanOuwerkerk_NComm2019",
+                          "MAGMA" = "MAGMA",
+                          "silver standard" = "silver_standard")
+levels(df$category) <- list("False positive genes"  = "FP", "Plausible genes" = "plausible")
+
+# Stacked barplot
+ggplot(data=df, aes(x=method, y=No.genes, fill=category)) +
+  geom_bar(stat="identity", width=0.8)+
+  scale_fill_brewer(palette="Paired")+ 
+  labs(title="", 
+       x="", y = "No. genes")+
+  theme_cowplot() +
+  theme(legend.position = c(0.15, 0.9),
+        legend.title=element_blank(), 
+        legend.text = element_text(colour="black", size = 14),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 12))
+
+```
+
+```{r barplot-plausible-FP-genes-2, fig.width=12, fig.height=6}
+df <- df %>% dplyr::filter(method %in% c("Mapgen (PIP >= 0.8)", "Mapgen (PIP >= 0.5)", 
+                                         "Mapgen (PIP >= 0.8) V2", "Mapgen (PIP >= 0.5) V2", 
+                                         "nearest gene", "ABC-max", "eQTL", "MAGMA"))
+ggplot(data=df, aes(x=method, y=No.genes, fill=category)) +
+  geom_bar(stat="identity", width=0.8)+
+  scale_fill_brewer(palette="Paired")+ 
+  labs(title="", x="", y = "No. genes")+
+  theme_pubr() +
+  labs_pubr(base_size = 14) +
+  theme(legend.position = c(0.15, 0.9),
+        legend.title=element_blank(), 
+        legend.text = element_text(colour="black", size = 14),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 12))
+```
+
+Scatterplot of precision vs no. nominated genes
+```{r benchmark_summary}
+summary_tabl <- genes_in_GO_terms.df %>% 
+  dplyr::select(method, n_nominated_genes, n_genes_GO_terms_fdr0.05) %>%
+  dplyr::rename(plausible = n_genes_GO_terms_fdr0.05) %>%
+  dplyr::mutate(FP = n_nominated_genes - plausible,
+                precision = plausible/n_nominated_genes)
+
+df <- summary_tabl
+df$method <- gsub("_genes", "", df$method)
+df$method <- factor(df$method)
+levels(df$method) <- list("Old Mapgen (PIP >= 0.8)" = "PIP0.8", 
+                          "Mapgen (PIP >= 0.8)" = "PIP0.8V2", 
+                          "Old Mapgen (PIP >= 0.5)" = "PIP0.5",
+                          "Mapgen (PIP >= 0.5)" = "PIP0.5V2",
+                          "80% gene CS" = "geneCS",
+                          "nearest gene body" = "nearest genebody", 
+                          "nearest gene" = "nearest tss", 
+                          "ABC-max" = "ABCmax", 
+                          "eQTL" = "eQTL",
+                          "finemapped eQTL CS" = "finemapped eQTL",
+                          "STARR-seq\nvan Ouwerkerk\nCircRes 2020" = "STARR-seq",
+                          "van Ouwerkerk\nNComm 2019" = "vanOuwerkerk_NComm2019",
+                          "MAGMA" = "MAGMA",
+                          "silver standard" = "silver_standard")
+
+print(df)
+```
+
+
+```{r benchmark_scatterplot_all, fig.width=10, fig.height=7}
+plot_df <- df %>% dplyr::filter(method %in% 
+                              c("Old Mapgen (PIP >= 0.8)","Mapgen (PIP >= 0.8)", 
+                                "Old Mapgen (PIP >= 0.5)","Mapgen (PIP >= 0.5)",  
+                                "nearest gene", "ABC-max", "eQTL", "STARR-seq", "van Ouwerkerk\nNComm 2019", "MAGMA", "silver standard"))
+
+# Scatterplot
+ggplot(plot_df, aes(x=n_nominated_genes, y=precision, color=method)) + 
+  geom_point(size=5, show.legend = FALSE) +
+  labs(title="", 
+       x="No. nominated genes", y = "Precision")+
+  geom_text(aes(label=method), vjust=-2, color="black", size=5) +
+  # scale_shape_manual(values=c(1, 0, 2, 5, 6)) +
+  scale_color_manual(values=c("red", "darkred", "gold", "darkorange",  "purple", "darkgreen", "darkblue", "cyan", "green", "brown", "black")) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(from = 0, to = 1, by = 0.2)) + 
+  scale_x_continuous(limits = c(0, 300), breaks = seq(from = 0, to = 300, by = 50)) + 
+  theme_pubr() +
+  labs_pubr(base_size = 14) +
+  # theme(axis.text=element_text(size=12),
+  #       axis.title=element_text(size=12))+
+  theme(panel.grid.major = element_line(color = "gray", size = 0.25, linetype = 2))
+  
+```
+
+
+```{r benchmark_scatterplot_1, dev=c('png', 'pdf'), fig.width=10, fig.height=7}
+plot_df <- df %>% dplyr::filter(method %in% 
+                              c("Old Mapgen (PIP >= 0.8)",
+                                "Mapgen (PIP >= 0.8)", 
+                                "Old Mapgen (PIP >= 0.5)",
+                                "Mapgen (PIP >= 0.5)", 
+                                "nearest gene", "ABC-max", "eQTL", "STARR-seq", "van Ouwerkerk\nNComm 2019", "MAGMA"))
+
+# Scatterplot
+ggplot(plot_df, aes(x=n_nominated_genes, y=precision, color=method)) + 
+  geom_point(size=5, show.legend = FALSE) +
+  labs(title="", 
+       x="No. nominated genes", y = "Precision")+
+  geom_text(aes(label=method), vjust=-2, color="black", size=5) +
+  # scale_shape_manual(values=c(1, 0, 2, 5, 6)) +
+  scale_color_manual(values=c("red", "darkred", "gold", "darkorange", "purple", "darkgreen", "darkblue", "cyan", "green", "brown")) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(from = 0, to = 1, by = 0.2)) + 
+  scale_x_continuous(limits = c(0, 300), breaks = seq(from = 0, to = 300, by = 50)) + 
+  theme_pubr() +
+  labs_pubr(base_size = 14) +
+  # theme(axis.text=element_text(size=12),
+  #       axis.title=element_text(size=12))+
+  theme(panel.grid.major = element_line(color = "gray", size = 0.25, linetype = 2))
+  
+```
+
+
+```{r benchmark_scatterplot_2, dev=c('png', 'pdf'), fig.width=10, fig.height=7}
+plot_df <- df %>% dplyr::filter(method %in% 
+                              c("Mapgen (PIP >= 0.8)",
+                                "Mapgen (PIP >= 0.5)",
+                                "nearest gene", "ABC-max", "eQTL", "STARR-seq", "van Ouwerkerk\nNComm 2019", "MAGMA"))
+
+# Scatterplot
+ggplot(plot_df, aes(x=n_nominated_genes, y=precision, color=method)) + 
+  geom_point(size=5, show.legend = FALSE) +
+  labs(title="", 
+       x="No. nominated genes", y = "Precision")+
+  geom_text(aes(label=method), vjust=-2, color="black", size=5) +
+  # scale_shape_manual(values=c(1, 0, 2, 5, 6)) +
+  scale_color_manual(values=c("red", "orange", "purple", "darkgreen", "darkblue", "cyan", "green", "brown")) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(from = 0, to = 1, by = 0.2)) + 
+  scale_x_continuous(limits = c(0, 300), breaks = seq(from = 0, to = 300, by = 50)) + 
+  theme_pubr() +
+  labs_pubr(base_size = 14) +
+  # theme(axis.text=element_text(size=12),
+  #       axis.title=element_text(size=12))+
+  theme(panel.grid.major = element_line(color = "gray", size = 0.25, linetype = 2))
+  
+```
+
+
+```{r benchmark_scatterplot_mapgen0.8, dev=c('png', 'pdf'), fig.width=10, fig.height=7}
+plot_df <- df %>% dplyr::filter(method %in% 
+                              c("Mapgen (PIP >= 0.8)",
+                                "nearest gene", "ABC-max", "eQTL", "STARR-seq", "van Ouwerkerk\nNComm 2019", "MAGMA"))
+
+# Scatterplot
+ggplot(plot_df, aes(x=n_nominated_genes, y=precision, color=method)) + 
+  geom_point(size=5, show.legend = FALSE) +
+  labs(title="", 
+       x="No. nominated genes", y = "Precision")+
+  geom_text(aes(label=method), vjust=-2, color="black", size=5) +
+  # scale_shape_manual(values=c(1, 0, 2, 5, 6)) +
+  scale_color_manual(values=c("red", "purple", "darkgreen", "darkblue", "cyan", "green", "brown")) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(from = 0, to = 1, by = 0.2)) + 
+  scale_x_continuous(limits = c(0, 300), breaks = seq(from = 0, to = 300, by = 50)) + 
+  theme_pubr() +
+  labs_pubr(base_size = 14) +
+  # theme(axis.text=element_text(size=12),
+  #       axis.title=element_text(size=12))+
+  theme(panel.grid.major = element_line(color = "gray", size = 0.25, linetype = 2))
+  
+```
+
+
+CHRNB2, SH3PXD2A and GJA1 are nominated by van Ouwerkerk et al., Circ Res 2020, and also in selected GO terms. 
+
+  - CHRNB2. Gene PIP = 0.827, associated with autosomal dominant nocturnal frontal lobe epilepsy. https://pubmed.ncbi.nlm.nih.gov/17900292/, https://pubmed.ncbi.nlm.nih.gov/15964197/
+  - SH3PXD2A. Gene PIP = 0.007, Also nominated as likely causal genes in CAD GWAS https://academic.oup.com/cardiovascres/article/114/9/1241/4956758, and PMID: 29212778
+  - GJA1 Gene PIP = 0.008. The encoded protein is the major protein of gap junctions in the heart that are thought to have a crucial role in the synchronized contraction of the heart and in embryonic development. https://www.genecards.org/cgi-bin/carddisp.pl?gene=GJA1
+
+CHRNB2 locus. Our top gene: KCNN3 (gene PIP = 0.838). CHRNB2 is in our gene credible set. 
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "CHRNB2") %>% select(locus) %>% distinct() %>% pull()
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "CHRNB2", "gene_name"]
+gene.view.full.df[gene.view.full.df$gene_name == "CHRNB2",]
+```
+
+SH3PXD2A locus. Our top gene: NEURL (gene PIP = 0.285). 
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "SH3PXD2A") %>% select(locus) %>% distinct() %>% pull()
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "SH3PXD2A", "gene_name"]
+gene.view.full.df[gene.view.full.df$gene_name == "SH3PXD2A",]
+```
+
+GJA1 locus. Our top gene: HSF2 (gene PIP = 0.674). 
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "GJA1") %>% select(locus) %>% distinct() %>% pull()
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "GJA1", "gene_name"]
+gene.view.full.df[gene.view.full.df$gene_name == "GJA1",]
+
+genemapping_res %>% filter(gene_name == "GJA1") %>% arrange(-fractional_PIP)
+```
+
+The other 7 genes nominated by van Ouwerkerk et al., Circ Res 2020, but not in selected GO terms.
+
+ADAR, KCNN3, PBXIP1, UBE2Q1, SFR1, OBFC1, NPTN
+
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "ADAR") %>% select(locus) %>% distinct() %>% pull()
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "ADAR", "gene_name"]
+
+gene.view.full.df[gene.view.full.df$gene_name == "ADAR",]
+```
+
+KCNN3
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "KCNN3") %>% select(locus) %>% distinct() %>% pull()
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "KCNN3", "gene_name"]
+
+gene.view.full.df[gene.view.full.df$gene_name == "KCNN3",]
+```
+
+PBXIP1
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "PBXIP1") %>% select(locus) %>% distinct() %>% pull()
+
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "PBXIP1", "gene_name"]
+
+gene.view.full.df[gene.view.full.df$gene_name == "PBXIP1",]
+```
+
+UBE2Q1
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "UBE2Q1") %>% select(locus) %>% distinct() %>% pull()
+
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "UBE2Q1", "gene_name"]
+
+gene.view.full.df[gene.view.full.df$gene_name == "UBE2Q1",]
+```
+
+SFR1
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "SFR1") %>% select(locus) %>% distinct() %>% pull()
+
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "SFR1", "gene_name"]
+
+gene.view.full.df[gene.view.full.df$gene_name == "SFR1",]
+```
+
+OBFC1
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "OBFC1") %>% select(locus) %>% distinct() %>% pull()
+
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "OBFC1", "gene_name"]
+
+gene.view.full.df[gene.view.full.df$gene_name == "OBFC1",]
+```
+
+NPTN
+```{r}
+selected_locus <- genemapping_res %>% filter(gene_name == "NPTN") %>% select(locus) %>% distinct() %>% pull()
+
+block.view.df[block.view.df$locus %in% selected_locus, ]
+
+gene.annots[gene.annots$gene_name == "NPTN", "gene_name"]
+
+gene.view.full.df[gene.view.full.df$gene_name == "NPTN",]
+```

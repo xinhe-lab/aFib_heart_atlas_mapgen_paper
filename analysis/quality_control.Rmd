@@ -1,0 +1,165 @@
+---
+title: "QC"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(ArchR)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+source('../R/analysis_utils.R')
+```
+
+```{r}
+get_density <- function(x, y, ...) {
+  dens <- MASS::kde2d(x, y, ...)
+  ix <- findInterval(x, dens$x)
+  iy <- findInterval(y, dens$y)
+  ii <- cbind(ix, iy)
+  return(dens$z[ii])
+}
+```
+
+
+### scRNA-seq
+
+```{r}
+srna <- readRDS('../seurat/Heart_Seurat_RNA_all_samples_raw_noAtrium.RDS')
+```
+
+```{r}
+donors <- c("02207","02336","03231")
+qc.df <- data.frame(umi = srna$nCount_RNA, Donor=srna$individual)
+df.list <- list()
+for(d in donors){
+  curr.df <- qc.df %>% filter(Donor == d) %>% arrange(-umi) %>% mutate(rank = 1:nrow(.)) %>% mutate(Type=ifelse(umi > 1000, 'Cell','Background'))
+  df.list[[d]] <- curr.df
+}
+qc.df <- Reduce(rbind, df.list)
+
+```
+
+#### Barcode-rank plot
+
+This plot shows each barcode's UMI count and rank. It is useful for distinguishing actual cells vs background.
+
+```{r}
+ggplot(qc.df, aes(x = rank, y=umi, color=Donor)) + geom_line(aes(linetype = Type)) + ggClean() +
+  scale_y_log10(breaks = scales::trans_breaks("log10", function(x) 10^x),
+                labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  scale_x_log10(breaks = scales::trans_breaks("log10", function(x) 10^x),
+                labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  scale_linetype_manual(values = c("dashed","solid")) + 
+  xlab('Barcodes') + ylab('UMI') + scale_color_brewer(palette = 'Set2')
+
+```
+
+#### Features vs UMI count
+
+This plot shows how many genes are detected at each level of UMI count. We use UMI count as a proxy for read count which we do not record directly. This plot is useful for setting lower and upper limits on features as to filter doublets and background barcodes. 
+
+```{r}
+qc.df <- data.frame(umi = srna$nCount_RNA/10^4, features=srna$nFeature_RNA/1000, sample=srna$dataset, stringsAsFactors = F)
+samples <- unique(srna$dataset)
+plist <- list()
+for(s in samples){
+  curr.qc.df <- qc.df[qc.df$sample == s,]
+  curr.qc.df$density <- get_density(curr.qc.df$umi, curr.qc.df$features, n = 100)
+  plist[[s]] <- ggplot(curr.qc.df, aes(x=umi, y=features, color=density)) + geom_point(alpha=0.5) + ggClean() + xlab("") + ylab("") + scale_colour_gradientn(colours = c("lightblue","yellow","red")) + LegendOff() + geom_hline(yintercept = 0.1, linetype="dashed") + geom_vline(xintercept = 1, linetype="dashed")
+}
+```
+
+```{r}
+do.call(grid.arrange, plist)
+```
+
+
+#### Library size distribution
+
+```{r}
+comb <- suppressMessages(loadArchRProject('../ArchR/ArchR_heart_noAtrium_raw/', showLogo = F))
+```
+
+```{r}
+stats.df <- data.frame(nfrag=log2(comb$nFrags), donor=comb$individual, region=comb$regions)
+ggplot(stats.df, aes(x = region, y = nfrag, fill=donor)) + geom_boxplot() + ggClean(rotate_axis = T) + ylab("Fragments") + xlab("")
+```
+
+```{r}
+stats.df <- data.frame(nfrag=comb$nFrags, donor=comb$individual, region=comb$regions) %>% group_by(region, donor) %>% summarise(ncell=n())
+png('../manuscript_figures/nNuc_preQC.png',width=2000,height=1400,res=300)
+ggplot(stats.df, aes(x = region, y = ncell, fill=donor)) + geom_bar(stat="identity", position="dodge") + ggClean(rotate_axis = T) + ylab("Number of Nuclei") + xlab("") + scale_fill_brewer(palette = "Set2") + LegendOff()
+dev.off()
+```
+
+
+
+```{r}
+ATAC_SAMPLES <- c("MW200804AA","Deep_MW200804AC","Deep_MW200804AD","SP-HE-MW200928E1ATAC-413ATAC",
+                 "SP-HE-HE200915ATAC-175ATAC","Deep_SP-HE200915ATAC-360ATAC","Deep_SP-HE200915ATAC-397ATAC","SP-HE-MW200928E1ATAC-398ATAC",
+                 "SP-HE-MW200928E2ATAC-175ATAC","Deep_SP-MW200928E2ATAC-367ATAC","Deep_SP-MW200928E2ATAC-407ATAC","SP-HE-MW200928E1ATAC-408ATAC")
+
+ATAC_INDIVIDUALS <- c(rep("black",4),rep("blue",4),rep("red",4))
+
+curr_x <- sort(log2(comb$nFrags[comb$Sample==ATAC_SAMPLES[1]]))
+curr_y <- 1:length(curr_x)/length(curr_x)
+plot(curr_x, curr_y, type='l', lwd=3, col=ATAC_INDIVIDUALS[15], xlab='log2 nFrags', ylab='CDF', xlim=c(11, 17))
+
+for(i in 2:length(ATAC_SAMPLES)){
+  
+  curr_x <- sort(log2(comb$nFrags[comb$Sample==ATAC_SAMPLES[i]]))
+  curr_y <- 1:length(curr_x)/length(curr_x)
+  lines(curr_x, curr_y, lwd=3, col=ATAC_INDIVIDUALS[i])
+  
+}
+
+legend(x = 16, y = 0.3, legend = c("02207","02336","03231"), pch = 16, col=c("black","blue","red"), bty = "n")
+```
+
+
+#### TSS Enrichment
+
+This shows the distribution of TSS enrichment across cells. Cells with low value of TSS enrichment are low quality. 
+
+```{r}
+tss.df <- data.frame(tss.enrich = comb$TSSEnrichment,
+                     nfrag  = log10(comb$nFrags), 
+                     sample = comb$Sample, 
+                     donor = comb$individual,
+                     stringsAsFactors = F)
+```
+
+
+```{r}
+plist <- list()
+samples <- unique(tss.df$sample)
+for(s in samples){
+  
+  curr.tss.df <- tss.df[tss.df$sample==s,]
+  curr.tss.df$density <- get_density(x = curr.tss.df$tss.enrich, y = curr.tss.df$nfrag, n = 50)
+
+  p <- ggplot(curr.tss.df, aes(x=tss.enrich, y=nfrag, color=density)) + 
+      geom_point() +
+      scale_colour_gradientn(colours = c("lightblue","yellow","red")) + 
+      ggClean() + 
+      geom_hline(yintercept = 3.7, linetype="dashed") + 
+      geom_vline(xintercept = 5, linetype="dashed") + 
+      LegendOff() + xlab("") + ylab("")
+  
+  plist[[s]] <- p
+}
+```
+
+```{r}
+# png('../manuscript_figures/ATAC_QC.png', width = 2500, height=1400, res = 300)
+do.call("grid.arrange", c(plist, list(nrow=3)))
+# dev.off()
+```
+
+
+
+

@@ -1,0 +1,550 @@
+---
+title: "Heart eQTLs"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(liftOver)
+library(ggpubr)
+library(rstatix)
+library(ArchR)
+source('../R/analysis_utils.R')
+```
+
+
+### Heart eQTL Finemapping
+
+Here we focus on eQTLs that are finemapped with a posterior probability of association > 0.8. There are approximately 2,300 such SNPs.
+
+```{r}
+finemap.res <- suppressMessages(readr::read_tsv('../eQTL_enrich/gtex_finemapping/GTEx_v8_finemapping_DAPG/Heart_LV_Finemapping_CS95.txt', col_names = F))
+colnames(finemap.res) <- c("tissue","gene","cluster_id","cluster_pip","variant_id","variant_pip")
+```
+
+```{r}
+high_pip_eqtls <- finemap.res[finemap.res$variant_pip>0.8,] %>% group_by(variant_id) %>% arrange(-variant_pip) %>% slice(1) %>% select(variant_id, variant_pip, gene)
+eqtl.gr <- snpIDtoGR(high_pip_eqtls$variant_id)
+eqtl.gr$SNP <- high_pip_eqtls$variant_id
+eqtl.gr$gene <- high_pip_eqtls$gene
+eqtl.gr$finemap.pip <- high_pip_eqtls$variant_pip
+```
+
+Import SNP SNAP results and convert them to hg38 (all eQTL data and ArchR project are in hg38)
+
+```{r}
+snp_match <- vroom::vroom('../matched_SNPs/eQTL_top_pip_hg19_5batches/SNPmatch_10_all.txt', col_names = F)
+snp_match$X1 <- NULL
+snp_match$X2 <- NULL
+
+random.snp.gr.list <- list()
+path <- '/project2/gca/software/liftOver_Chains/hg19ToHg38.over.chain'
+ch <- import.chain(path)
+
+for(i in 1:ncol(snp_match)){
+    curr <- snp_match %>% pull(i)
+    chroms <- sapply(strsplit(curr, split = ':'), function(x){x[1]})
+    pos <- as.integer(sapply(strsplit(curr, split = ':'), function(x){x[2]}))
+    curr.gr <- GRanges(seqnames = chroms, ranges = IRanges(start = pos), SNP = curr)
+    seqlevelsStyle(curr.gr) <- "UCSC"
+    random.snp.gr.list[[i]] <- unlist(liftOver(curr.gr, ch))
+}
+```
+
+
+Get tissue activity of each eQTL from https://zenodo.org/record/3727189 (GTEx v8 paper)
+
+```{r}
+eqtl.lfsr <- suppressMessages(vroom::vroom('../eQTL_enrich/broadinstitute-gtex-v8-a014b43/data/Fig6C_all_top.z_lfsr.sig.pruned.txt.gz'))
+```
+
+Keep SNPs with PIP > 0.8 AND they have LFSR data.
+
+```{r}
+same.snps <- intersect(eqtl.gr$SNP, eqtl.lfsr$variant)
+heart.eqtl.lfsr <- eqtl.lfsr[eqtl.lfsr$variant %in% same.snps,]
+eqtl.gr <- eqtl.gr[eqtl.gr$SNP %in% same.snps]
+saveRDS(eqtl.gr, '../eQTL_enrich/gtex_finemapping/HighPIP_eQTLs_w_LFSR.gr.rds')
+```
+
+Find the mean number of tissues per eQTL. 
+
+```{r}
+# all eqtls
+tissues.active <- rowSums(eqtl.lfsr[,3:ncol(eqtl.lfsr)] < 0.01, na.rm = T) 
+all.eqtl.ntissues <- data.frame(eqtl=eqtl.lfsr$variant, ntissues=tissues.active) %>% group_by(eqtl) %>% summarise(mean_tissues = mean(ntissues))
+all.eqtl.ntissues <- all.eqtl.ntissues[all.eqtl.ntissues$mean_tissues > 0,]
+
+# heart eqtls
+tissues.active <- rowSums(heart.eqtl.lfsr[,3:ncol(heart.eqtl.lfsr)] < 0.01, na.rm = T) 
+heart.eqtl.ntissues <- data.frame(eqtl=heart.eqtl.lfsr$variant, ntissues=tissues.active) %>% group_by(eqtl) %>% summarise(mean_tissues = mean(ntissues))
+heart.eqtl.ntissues <- heart.eqtl.ntissues[heart.eqtl.ntissues$mean_tissues > 0,]
+```
+
+### Tissue Sharing of eQTLs
+
+Below we plot the frequency of tissues active in causal heart eQTLs. Typically eQTLs have a bimodal distribution with peaks at 1-5 tissues and 45-50 tissues. We see that for heart eQTLs, they are generally shared across tissues. 
+
+```{r}
+betterHist <- function(X){
+ bks <- seq(0, 50, 5)
+ labs <- sapply(1:(length(bks)-1), function(x){paste0(bks[x]+1,'-',bks[x+1])})
+ bin.count <- table(cut(X$mean_tissues, breaks = bks, labels = labs))
+ bin.count <- bin.count/sum(bin.count)
+ bin.count.df <- data.frame(count=as.numeric(bin.count), breaks=factor(names(bin.count), levels = labs))
+}
+
+all.eqtl.bin <- betterHist(all.eqtl.ntissues)
+heart.eqtl.bin <- betterHist(heart.eqtl.ntissues)
+
+result <- rbind(all.eqtl.bin, heart.eqtl.bin)
+result$eQTLs <- c(rep(c("All","Heart"), each=nrow(all.eqtl.bin)))
+```
+
+```{r}
+ggplot(result, aes(x=breaks, y=count, fill=eQTLs)) + 
+  geom_bar(stat="identity", position = "dodge", width=0.8) + 
+  ggClean() + xlab('Tissues with LFSR < 0.01') + ylab('Proportion of eQTLs') + 
+  ggtitle('Tissue Sharing of Heart eQTLs') + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  scale_fill_manual(values = c("#D6604D","#4393C3"))
+```
+
+
+Add tissue activity to our eQTL genomic ranges object
+
+```{r}
+eqtl.gr$ntissues.active <- heart.eqtl.ntissues$mean_tissues[match(eqtl.gr$SNP, heart.eqtl.ntissues$eqtl)]
+#eqtl.gr.low <- eqtl.gr[which(eqtl.gr$ntissues.active<=10),]
+#eqtl.gr.high <- eqtl.gr[which(eqtl.gr$ntissues.active>=30),]
+```
+
+### Distribution of heart eQTLs
+
+Overlap generic genomic annotations with top eQTLs
+
+```{r}
+satac <- suppressMessages(ArchR::loadArchRProject('../ArchR/ArchR_heart_latest_noAtrium/', showLogo = F))
+union.set <- ArchR::getPeakSet(satac)
+union.set$peakID <- GRToString(union.set)
+union.exons <- union.set[union.set$peakType == "Exonic", ]
+union.nonExon <- union.set[union.set$peakType != "Exonic",]
+
+annots <- readRDS('../genomic_annotations/hg38_gtf_genomic_annots.gr.rds')
+exon.annots <- annots$exons
+utr.annots <- annots$UTRs
+exon.annots <- removeOverlaps(X = exon.annots, to.remove = utr.annots)
+intron.annots <- annots$introns
+intron.nonpeak <- removeOverlaps(intron.annots, to.remove = union.set)
+
+markers <- readRDS('../ArchR/ArchR_heart_latest_noAtrium/PeakCalls/DA_MARKERS_FDRP_1_log2FC_1.rds')
+markers <- lapply(markers, function(x){removeOverlaps(X = x, to.remove = union.exons)})
+ 
+marker.ids <- unique(GRToString(unlist(GRangesList(markers))))
+union.set.shared <- union.nonExon[!(union.nonExon$peakID %in% marker.ids),]
+```
+
+
+How many cell types is each peak from union set found in? Calculcate eQTL enrichment
+
+```{r}
+markers <- readRDS('../ArchR/ArchR_heart_latest_noAtrium/PeakCalls/DA_MARKERS_FDRP_1_log2FC_1.rds')
+markers <- lapply(markers, function(x){removeOverlaps(X = x, to.remove = union.exons)})
+
+marker.ids <- GRToString(unlist(GRangesList(markers)))
+marker.ids.count <- table(marker.ids)
+shared.markers <- names(marker.ids.count)[marker.ids.count > 1 ]
+ct.specific.markers <- names(marker.ids.count)[marker.ids.count == 1]
+
+markers <- lapply(markers, function(x){x[GRToString(x) %in% ct.specific.markers,]})
+union.set.shared <- union.nonExon[!(union.nonExon$peakID %in% ct.specific.markers),]
+
+# cluster the shared set into multiple cell types
+mean.acc.obj <- getGroupSE(satac, useMatrix = 'PeakMatrix', groupBy = 'CellTypes', divideN = T, scaleTo = 10^5)
+mean.acc.mat <- mean.acc.obj@assays@data$PeakMatrix
+rdata <- rowData(mean.acc.obj)
+rownames(mean.acc.mat) <- paste0(rdata$seqnames,':',rdata$start,'-',rdata$end)
+mean.acc.mat <- mean.acc.mat[union.set.shared$peakID,]
+
+for(i in 1:ncol(mean.acc.mat)){
+  curr.thresh <- as.numeric(quantile(mean.acc.mat[,i],0.75))
+  mean.acc.mat[,i] <- 1*(mean.acc.mat[,i] > curr.thresh)
+}
+
+peak.count <- rowSums(mean.acc.mat)
+
+# do the overlapping
+markers$Neuronal <- NULL
+markers$`Smooth Muscle` <- NULL
+peaks.list <- markers
+ 
+peaks.list[["2-3"]] <- StringToGR(rownames(mean.acc.mat)[peak.count >= 2 & peak.count <= 3])
+peaks.list[["4+"]] <- StringToGR(rownames(mean.acc.mat)[peak.count >= 4])
+
+peaks.list[["Exons"]] <- exon.annots
+peaks.list[["UTR"]] <- utr.annots
+peaks.list[["Intron"]] <- intron.nonpeak
+```
+
+
+
+Overlap eQTLs with exons, introns, etc.
+
+```{r}
+
+peaks.gr.list <- peaks.list
+
+peaks.eqtls <- join_overlap_list(gr.list = peaks.gr.list, X = eqtl.gr)
+peaks.random <- lapply(random.snp.gr.list, function(x){
+    join_overlap_list(gr.list = peaks.gr.list, X = x)
+})
+
+
+random.dist.df.list <- list()
+for(i in 1:length(peaks.random)){
+    curr <- peaks.random[[i]]
+    snpsIn <- unique(unlist(sapply(curr, function(x){x$SNP})))
+    curr$Unassigned <- random.snp.gr.list[[i]][!(random.snp.gr.list[[i]]$SNP %in% snpsIn),]
+    
+    curr.df <- as.data.frame(sapply(curr, FUN = function(x){length(x)/length(random.snp.gr.list[[i]])}))
+    colnames(curr.df) <- c("freq")
+    random.dist.df.list[[i]] <- curr.df
+}
+
+random.dist.avg <- data.frame(freq = rowMeans(Reduce(cbind, random.dist.df.list)))
+random.dist.avg$category <- rownames(random.dist.avg)
+
+snpsIn <- unique(
+  unlist(
+    sapply(peaks.eqtls, function(x){x$SNP})
+  )
+)
+peaks.eqtls$Unassigned <- eqtl.gr[!(eqtl.gr$SNP %in% snpsIn),]
+```
+
+
+```{r}
+peak.dist.df <- as.data.frame(sapply(peaks.eqtls, FUN = function(x){length(x)/length(eqtl.gr)}))
+colnames(peak.dist.df) <- c("freq")
+peak.dist.df$category <- rownames(peak.dist.df)
+
+peak.set.dist.df <- Reduce(rbind, list(random.dist.avg, peak.dist.df))
+peak.set.dist.df$SNPs <- c(rep("Random SNPs", nrow(random.dist.avg)),
+                          rep("eQTLs", nrow(peak.dist.df)))
+```
+
+
+```{r}
+plot.levels <- c(names(peaks.gr.list),"Unassigned")
+peak.set.dist.df$category <- factor(peak.set.dist.df$category, 
+                                    levels = plot.levels)
+
+n_cat <- nrow(peak.dist.df)
+enrich <- peak.dist.df$freq / random.dist.avg$freq
+enrich.df <- data.frame(category= peak.dist.df$category,
+                        group1 = rep("eQTLs", n_cat),
+                        group2 = rep("Random SNPs", n_cat),
+                        p = round(enrich,2),
+                        y.position = sapply(1:n_cat, function(x)max(peak.dist.df$freq[x], random.dist.avg$freq[x]))) %>% 
+    as_tibble() %>% 
+    mutate(group1 = unfactor(group1), group2 = unfactor(group2))
+
+enrich.df$category <- factor(enrich.df$category, levels = plot.levels)
+enrich.df <- enrich.df %>% add_x_position(x = "category", dodge = 0.75)
+enrich.df$p[enrich.df$p == 0] <- "ns"
+
+ggbarplot(peak.set.dist.df, x = "category", y = "freq", fill = "SNPs", position = position_dodge(.75), palette = "Paired") + 
+    stat_pvalue_manual(enrich.df, tip.length = 0.01, step.increase = 0, bracket.nudge.y = 0.01) + coord_cartesian(ylim = c(0, 0.4)) +
+    ggClean(rotate_axis = T)
+```
+
+
+Tissue sharing patterns in scATAC-seq peak sets
+
+```{r}
+peaks.tissue.sharing <- sapply(peaks.eqtls, function(x){x$ntissues.active}) 
+peaks.tissue.sharing$`Union Set` <- NULL
+peaks.tissue.sharing <- setNames(unlist(peaks.tissue.sharing, use.names=F),rep(names(peaks.tissue.sharing), lengths(peaks.tissue.sharing)))
+peaks.tissue.sharing.df <- data.frame(category=names(peaks.tissue.sharing), ntissues=peaks.tissue.sharing)
+peaks.tissue.sharing.df$category <- factor(peaks.tissue.sharing.df$category, levels=plot.levels)
+peaks.tissue.sharing.df <- peaks.tissue.sharing.df[!is.na(peaks.tissue.sharing.df$ntissues),]
+
+peaks.tissue.sharing.df$category <- factor(peaks.tissue.sharing.df$category, levels = plot.levels)
+```
+
+```{r}
+ggplot(peaks.tissue.sharing.df, aes(x=category, y=ntissues)) + 
+  geom_violin(fill="lightblue") + 
+  geom_boxplot(width=0.1) + 
+  ggClean() + LegendOff() + xlab("Tissues Active (LFSR < 0.01)") + ylab("") +
+  scale_y_continuous(breaks=seq(0,50,10))
+```
+
+```{r}
+diff.exp.res <- readRDS('../seurat/diff_expr_markers.df.rds')
+srna <- readRDS('../seurat/Heart_RNA_Processed_Combined_NoAtrium.rds')
+srna.exp <- Seurat::AverageExpression(srna)
+srna.exp.mat <- as.matrix(log2(srna.exp$RNA + 1))
+```
+
+### Expression of eGenes
+
+```{r}
+cm.egenes <- peaks.eqtls$Cardiomyocyte$gene
+cm.egenes <- sub('[.].*', '', cm.egenes)
+cm.symbol <- AnnotationDbi::select(x = org.Hs.eg.db::org.Hs.eg.db, keys = cm.egenes, columns = "SYMBOL", keytype = "ENSEMBL") %>% 
+    rename(gene_id = ENSEMBL) %>%
+    group_by(gene_id) %>% slice(1) %>%
+  filter(!is.na(SYMBOL))
+
+cm.egene.exp <- srna.exp.mat[rownames(srna.exp.mat) %in% cm.symbol$SYMBOL, ] 
+write.csv(x = cm.egene.exp, file = '../eQTL_enrich/CM_eGene_Expression.csv', sep = '\t', row.names = T)
+
+cm.egene.exp <- cm.egene.exp %>% as_tibble() %>% pivot_longer(cols = everything())
+
+ggplot(cm.egene.exp, aes(x = name, y=value)) + geom_boxplot() + ggClean() + ylab('Log2 TP10K (n = 74 eGenes)') + xlab('')
+```
+
+
+### eGene Sharing
+
+```{r}
+#cluster.gene <- diff.exp.res[,c("cluster", "gene")]
+
+srna.exp.mat <- as.matrix(log2(srna.exp$RNA + 1))
+all.genes <- rownames(srna.exp.mat)
+#srna.exp.mat <- srna.exp.mat[!(rownames(srna.exp.mat) %in% cluster.gene$gene),] # non DE genes
+
+for(i in 1:ncol(srna.exp.mat)){
+  curr.thresh <- quantile(srna.exp.mat[,i], 0.75)
+  srna.exp.mat[,i] <- 1*(srna.exp.mat[,i] > curr.thresh)
+}
+gene.count <- rowSums(srna.exp.mat)
+
+ct.specific <- srna.exp.mat[gene.count == 1,]
+
+ct.peaks <- list()
+for(i in 1:ncol(ct.specific)){
+
+  curr.genes <- rownames(ct.specific)[ct.specific[,i]==1]
+
+  ct.peaks[[colnames(ct.specific)[i]]] <- data.frame(gene = curr.genes,
+                                                     cluster = rep(colnames(ct.specific)[i], length(curr.genes)),
+                                                     row.names = curr.genes)
+}
+ct.peaks.df <- Reduce(rbind, ct.peaks)
+
+sharing.df <- data.frame(gene = c(names(gene.count)[gene.count>=2 & gene.count<=3],
+                                   names(gene.count[gene.count>=4])),
+                         cluster = c(rep("2-3", sum(gene.count>=2 & gene.count<=3)),
+                                     rep("4+", sum(gene.count>=4))))
+rownames(sharing.df) <- sharing.df$gene
+
+cluster.gene.sharing <- rbind(ct.peaks.df, sharing.df)
+```
+
+
+```{r}
+celltype_ideal_order <- c("Cardiomyocyte","Smooth Muscle","Pericyte","Endothelial","Fibroblast","Neuronal", "Lymphoid","Myeloid")
+
+eqtl.snp.gr <- readRDS('../eQTL_enrich/gtex_finemapping/HighPIP_eQTLs_w_LFSR.gr.rds')
+
+finemap.res <- readr::read_tsv( '../eQTL_enrich/gtex_finemapping/GTEx_v8_finemapping_DAPG/Heart_LV_Finemapping_CS95.txt', col_names = F)
+colnames(finemap.res) <- c("tissue","gene","cluster_id","cluster_pip","variant_id","variant_pip")
+finemap.res <- finemap.res[finemap.res$variant_id %in% eqtl.snp.gr$SNP,] %>% 
+    dplyr::select(variant_id, gene) %>% rename(gene_id = gene, SNP = variant_id) %>% mutate(gene_id = sub('\\..*', '', gene_id))
+
+ensembl.to.symbol <- AnnotationDbi::select(x = org.Hs.eg.db::org.Hs.eg.db, keys = finemap.res$gene_id, columns = "SYMBOL", keytype = "ENSEMBL") %>% 
+    rename(gene_id = ENSEMBL) %>%
+    group_by(gene_id) %>% slice(1)
+
+finemap.res <- left_join(finemap.res, ensembl.to.symbol)
+
+finemap.res <- finemap.res[finemap.res$SYMBOL %in% all.genes,]
+```
+
+
+```{r}
+celltype_ideal_order_shared <- c(celltype_ideal_order, "2-3","4+")
+
+finemap.res.rna <- finemap.res %>% rename(gene = SYMBOL) %>% left_join(., cluster.gene.sharing)
+prop.egenes <- finemap.res.rna %>% 
+  group_by(cluster) %>%
+  summarise(propGenes = length(gene)/nrow(finemap.res)) %>% 
+  mutate(cluster = replace_na(unfactor(cluster), 'Unassigned'))
+
+prop.egenes <- prop.egenes[order(prop.egenes$cluster),]
+
+set.seed(2322)
+random.genes <- lapply(celltype_ideal_order_shared, function(x){all.genes[sample(1:length(all.genes), sum(cluster.gene.sharing$cluster==x), replace = F)]})
+
+random.genes.df <- data.frame(cluster = rep(celltype_ideal_order_shared, lengths(random.genes)),
+                              gene = unlist(random.genes, use.names = F))
+random.genes.df$cluster <- factor(random.genes.df$cluster, 
+                                  levels = celltype_ideal_order_shared)
+
+finemap.res.rna.random <- finemap.res %>% rename(gene = SYMBOL) %>% left_join(., random.genes.df)
+prop.random.genes <- finemap.res.rna.random %>% 
+  group_by(cluster) %>% 
+  summarise(propGenes = length(gene)/nrow(finemap.res)) %>% 
+  mutate(cluster = replace_na(unfactor(cluster), 'Unassigned'))
+prop.random.genes <- prop.random.genes[order(prop.random.genes$cluster),]
+```
+
+plot proportion of eGenes vs random
+
+```{r}
+gene.set.dist <- rbind(prop.egenes, prop.random.genes)
+gene.set.dist$Type <- rep(c("eGenes","Random Genes"), c(11,11))
+gene.set.dist$cluster <- factor(gene.set.dist$cluster, levels = c(celltype_ideal_order_shared,"Unassigned"))
+
+n_cat <- nrow(prop.egenes)
+enrich <- prop.egenes$propGenes / prop.random.genes$propGenes
+enrich.df <- data.frame(category= prop.egenes$cluster,
+                        group1 = rep("eGenes", n_cat),
+                        group2 = rep("Random Genes", n_cat),
+                        p = round(enrich,2),
+                        y.position = sapply(1:n_cat, function(x)max(prop.egenes$propGenes[x], prop.random.genes$propGenes[x]))) %>% 
+    as_tibble() %>% 
+    mutate(group1 = unfactor(group1), group2 = unfactor(group2))
+
+enrich.df$category <- factor(enrich.df$category, levels = c(celltype_ideal_order_shared,"Unassigned"))
+enrich.df <- enrich.df %>% add_x_position(x = "category", dodge = 0.75)
+enrich.df$p[enrich.df$p == 0] <- "ns"
+
+ggbarplot(gene.set.dist, x = "cluster", y = "propGenes", fill = "Type", position = position_dodge(.75), palette = "Paired") + 
+    stat_pvalue_manual(enrich.df, tip.length = 0.01, step.increase = 0, bracket.nudge.y = 0.01) + coord_cartesian(ylim = c(0, 0.4)) +
+    ggClean(rotate_axis = T) + xlab('Cell types') + ylab('Proportion of eGenes')
+
+```
+
+plot tissue sharing of eGenes's eQTLs
+
+```{r}
+tissues.active.df <- data.frame(SNP = finemap.res.rna$SNP, 
+                                tissues.active = eqtl.gr$ntissues.active[match(finemap.res.rna$SNP, eqtl.gr$SNP)], 
+                                cluster = unfactor(finemap.res.rna$cluster),
+                                stringsAsFactors = F)
+tissues.active.df <- tissues.active.df[!is.na(tissues.active.df$cluster),]
+tissues.active.df$cluster <- factor(tissues.active.df$cluster, 
+                                    levels = celltype_ideal_order_shared)
+
+ggplot(tissues.active.df, aes(x = cluster, y = tissues.active)) + geom_violin(fill='lightblue') + geom_boxplot(width = 0.1) + ggClean(rotate_axis = T) + xlab('Tissue Activity of eQTL') + ylab('eGene Type')
+```
+
+```{r}
+prop.exp <- 0.5
+rna.binary.exp <- (srna@assays$RNA@counts>0)
+same.genes <- intersect(rownames(srna.exp.mat), finemap.res$SYMBOL)
+
+celltypes <- unique(Seurat::Idents(srna))
+celltype.prop.exp <- list()
+for(ct in celltypes){
+    celltype.prop.exp[[ct]] <- rowMeans(rna.binary.exp[,Seurat::Idents(srna) == ct])
+}
+rna.prop.exp.mat <- Reduce(cbind, celltype.prop.exp)
+colnames(rna.prop.exp.mat) <- celltypes
+
+egene.ncelltypes <- rowSums(rna.prop.exp.mat[same.genes,] >= prop.exp)
+egene.ncelltypes <- egene.ncelltypes[egene.ncelltypes>0]
+egene.ncelltypes[egene.ncelltypes >=4] <- 4
+prop.egenes.in <- table(egene.ncelltypes)/length(same.genes)
+
+random.ncelltypes <- rowSums(rna.prop.exp.mat[sample(1:nrow(rna.prop.exp.mat), size = length(same.genes), replace = F),] >= prop.exp)
+random.ncelltypes <- random.ncelltypes[random.ncelltypes>0]
+random.ncelltypes[random.ncelltypes>=4] <- 4
+prop.random.in <- table(random.ncelltypes)/length(same.genes)
+
+barplot(prop.egenes.in/prop.random.in)
+```
+
+
+```{r}
+celltype_ideal_order <- c("Cardiomyocyte","Smooth Muscle","Pericyte","Endothelial","Fibroblast","Neuronal", "Lymphoid","Myeloid")
+
+ns <- rep(names(peaks.eqtls), lengths(peaks.eqtls))
+eqtl.overlap.peaks <- unlist(GRangesList(peaks.eqtls))
+eqtl.overlap.peaks$cellType <- factor(ns, levels = c("Cardiomyocyte","CM Shared")) # only picking these two
+eqtl.overlap.peaks.df <- eqtl.overlap.peaks %>% as_tibble() %>% select(SNP, cellType)
+
+finemap.res.2 <- finemap.res %>% left_join(., eqtl.overlap.peaks.df, on='SNP')
+
+finemap.res.inRNA <- finemap.res.2[finemap.res.2$SYMBOL %in% rownames(srna.exp.mat),] %>% arrange(cellType) %>% filter(!is.na(cellType))
+exp.df <- data.frame(log2cpm = c(srna.exp.mat[finemap.res.inRNA$SYMBOL,"Cardiomyocyte"]), type = finemap.res.inRNA$cellType)
+
+ggplot(exp.df, aes(x = type, y = log2cpm)) + geom_boxplot(width=0.2) + ggClean() + xlab('eGene Type') + ylab('log2 TP10k') + 
+    annotate(geom="text", x=2, y=4, label="t-test p-value: 0.0002",color="red")
+```
+
+```{r}
+ns <- rep(names(peaks.eqtls.sharing), lengths(peaks.eqtls.sharing))
+eqtl.overlap.peaks <- unlist(GRangesList(peaks.eqtls.sharing))
+eqtl.overlap.peaks$cellType <- factor(ns, levels = 1:4) # only picking these two
+eqtl.overlap.peaks.df <- eqtl.overlap.peaks %>% as_tibble() %>% select(SNP, cellType)
+
+finemap.res.2 <- finemap.res %>% left_join(., eqtl.overlap.peaks.df, on='SNP')
+
+finemap.res.inRNA <- finemap.res.2[finemap.res.2$SYMBOL %in% rownames(srna.exp.mat),] %>% arrange(cellType) %>% filter(!is.na(cellType))
+exp.df <- data.frame(log2cpm = c(agg.exp[finemap.res.inRNA$SYMBOL,"Bulk"]), type = finemap.res.inRNA$cellType)
+
+ggplot(exp.df, aes(x = type, y = log2cpm)) + geom_boxplot(width=0.2) + ggClean() + xlab('Number of Cell-types Shared') + ylab('eGene Bulk Expression') + ylim(c(0,1))
+```
+
+
+### overlap with iQTLs
+
+```{r}
+iqtls <- readr::read_tsv('../iQTLs_summary_stats.txt')
+iqtls <- iqtls[iqtls$celltype=="Myocytes" & iqtls$tissue_id=="Heart_Left_Ventricle",]
+iqtls.gr <- snpIDtoGR(iqtls$variant_id)
+```
+
+```{r}
+markers <- readRDS('../ArchR/ArchR_heart_latest_noAtrium/PeakCalls/DA_MARKERS_FDRP_1_log2FC_1.rds')
+markers$`Smooth Muscle` <- NULL
+markers$Neuronal <- NULL
+
+peaks.iqtls <- join_overlap_list(gr.list = markers, X = iqtls.gr)
+peak.iqtls.dist.df <- as.data.frame(sapply(peaks.iqtls, FUN = function(x){length(x)/length(iqtls.gr)}))
+colnames(peak.iqtls.dist.df) <- c("freq")
+peak.iqtls.dist.df$category <- rownames(peak.iqtls.dist.df)
+```
+
+
+### Sharing in non CMs
+
+The main issue to address is why eQTLs in non-CM peaks are shared with other tissues at high proportions. The hypothesis is that some of the cell types, say fibroblast, are commonly present in other tissues, which drive the high sharing.
+So if the hypothesis is true, we expect that tissues with shared cell types would have high sharing (in non-CM eQTLs), while tissues not shared cell types would have low sharing.
+
+```{r}
+dapg.eqtl <- readr::read_tsv(file = '../eQTL_enrich/gtex_finemapping/GTEx_v8_finemapping_DAPG/GTEx_v8_finemapping_DAPG.txt.gz')
+```
+
+```{r}
+peaks.eqtls.atac <- list(peaks.eqtls$Cardiomyocyte, 
+                         peaks.eqtls$Endothelial)
+names(peaks.eqtls.atac) <- c("Cardiomyocyte","Endothelial")
+tissues.to.keep <- c("Whole_Blood", "Lung","Heart_Atrial_Appendage","Muscle_Skeletal","Thyroid")
+#tissues.to.keep <- unique(dapg.eqtl$tissue_id)
+dapg.eqtl.filt <- dapg.eqtl %>% 
+    filter(variant_pip > 0.8) %>%
+    filter(tissue_id %in% tissues.to.keep) %>% 
+    mutate(eqtl_identifier = paste0(variant_id, '__', gene_id))
+
+res <- lapply(peaks.eqtls.atac, function(x){
+    eqtlsIn <- x %>% as_tibble() %>% mutate(eqtl_identifier = paste0(SNP, '__', gene)) %>% .$eqtl_identifier;
+    dapg.eqtl.filt %>% group_by(tissue_id) %>% summarise(non_cm_overlap = sum(eqtlsIn %in% eqtl_identifier)/length(eqtlsIn))
+})
+res.mat <- Reduce(rbind, res)
+res.mat$type <- rep(names(res), each=length(tissues.to.keep))
+``` 
+
+```{r}
+ggplot(res.mat, aes(x= tissue_id, y = non_cm_overlap, fill=type)) + geom_bar(stat='identity', position='dodge') + ggClean(rotate_axis = F) +
+    xlab('Proportion of eQTLs') + ylab('Tissue') +   
+    scale_fill_manual(values = c("#b22222","#8DD3C7","#BEBADA", "#FB8072")) + scale_y_continuous(breaks = seq(0, 0.55, 0.1)) +
+    coord_flip()
+```
+
+
+

@@ -1,0 +1,407 @@
+---
+title: "AF gene mapping procedure (no Atrium, including CM non-DA peaks)"
+output:
+  workflowr::wflow_html:
+    code_folding: hide
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r knitr-opts, include=FALSE}
+knitr::opts_chunk$set(fig.align = "center")
+```
+
+Load packages and some functions used in this analysis
+```{r load-packages, message=FALSE, warning=FALSE}
+suppressMessages(library(data.table))
+suppressMessages(library(tidyverse))
+suppressMessages(library(GenomicRanges))
+library(ggplot2)
+library(ggrepel)
+library(readr)
+library(cowplot)
+library(mapgen)
+library(ggvenn)
+
+source('../R/analysis_utils.R')
+```
+
+## Linking causal SNPs to Genes
+
+Settings
+```{r settings}
+data_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping"
+finemapping_file <- "/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_torusprior_122loci.rds"
+genomic_annots_file <- file.path(data_dir, "GWAS_gene_mapping_annots_hg19.gr.rds")
+ABC_file <- file.path(data_dir, "/ABC/Nasser2021/tissues/heart_ventricle-ENCODE_ABC.tsv.gz")
+ABC_thresh <- 0.015
+ABC_flank <- 0
+outdir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_mapping_result_latest_noAtrium_nonDA_newSuSiE/"
+dir.create(outdir, showWarnings = F, recursive = T)
+```
+
+Load finemapping results
+```{r load-finemapping-res}
+finemap_res <- readRDS(finemapping_file)
+finemap.gr <- GenomicRanges::GRanges(seqnames = finemap_res$chr, ranges = IRanges::IRanges(start = finemap_res$pos, end = finemap_res$pos))
+finemap.gr$snp <- finemap_res$snp
+finemap.gr$pip <- finemap_res$susie_pip
+finemap.gr$pval <- finemap_res$pval
+finemap.gr$cs  <- finemap_res$CS
+finemap.gr$chr <- finemap_res$chr
+finemap.gr$pos <- finemap_res$pos
+finemap.gr$locus <- finemap_res$locus
+finemap.gr$ref <- finemap_res$a0
+finemap.gr$alt <- finemap_res$a1
+seqlevelsStyle(finemap.gr) <- "UCSC"
+finemap.gr <- finemap.gr[finemap.gr$pip > 1e-5, ]
+```
+
+load annotations
+```{r load-annotations}
+## load annotations for linking SNPs to genes (run `clean_genomic.annotations.R` to produce)
+genomic.annots <- load_genomic_annots(genomic_annots_file)
+names(genomic.annots)[names(genomic.annots) == "HiC"] <- "pcHiC"
+
+gene.annots <- genomic.annots$genes
+
+# Load ABC scores (optional)
+ABC.gr <- load_ABC(ABC_file, ABC_thresh, full.element = TRUE, ABC_flank)
+# saveRDS(ABC.gr,  "/project2/xinhe/shared_data/aFib_gene_finemapping/ABC/Nasser2021/tissues/heart_ventricle-ENCODE_ABC.gr.rds")
+ABC.gr <- ABC.gr[ABC.gr$gene_name %in% gene.annots$gene_name, ] # restrict to protein coding genes
+genomic.annots$ABC <- ABC.gr
+
+# Define enhancer regions
+genomic.annots$enhancer_regions <- genomic.annots$OCRs_hg19
+
+cat("genomic.annots: \n")
+names(genomic.annots)
+```
+
+Run gene mapping using: active_promoter_method = "OCRs", enhancer_loop_method = "ABC.pcHiC.nearby20kb", intron.mode = FALSE, distance weight = 5e4 (50kb). 
+
+```{r run-gene-mapping-mapgen, eval=FALSE}
+# Compute gene PIP
+genomic.annots$active_promoters <- subsetByOverlaps(genomic.annots$promoters, genomic.annots$OCRs_hg19, minoverlap = 100)
+
+genemapping_res <- compute_gene_pip(finemap.gr, 
+                                     genomic.annots,
+                                     enhancer.loop.method = 'ABC.pcHiC.nearby20kb',
+                                     intron.mode = FALSE,
+                                     c.dist = 50000,
+                                     cols.to.keep = c("snp","chr","pos","ref","alt","locus","pip","gene_name", "category", "weight", "frac_pip", "gene_pip"))
+
+genemapping_res <- genemapping_res %>% as_tibble()
+
+# Extract gene level result
+gene.pip.res <- extract_gene_level_result(genemapping_res, gene.annots)
+
+gene.finemapping.res.l <- list(full = genemapping_res, genes = gene.pip.res)
+  
+saveRDS(gene.finemapping.res.l, file.path(outdir, paste0("aFib_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_result.rds")))
+```
+
+Find the nearest gene for the top SNP in each locus
+```{r nearest-genes, eval=FALSE}
+finemap_res <- readRDS(finemapping_file)
+gwas.gr <- GenomicRanges::GRanges(seqnames = finemap_res$chr, ranges = IRanges::IRanges(start = finemap_res$pos, end = finemap_res$pos))
+gwas.gr$snp <- finemap_res$snp
+gwas.gr$pval <- finemap_res$pval
+gwas.gr$zscore <- finemap_res$zscore
+gwas.gr$locus <- finemap_res$locus
+seqlevelsStyle(gwas.gr) <- "UCSC"
+
+gwas.gr <- gwas.gr[order(abs(gwas.gr$zscore), decreasing = T), ]
+top.snps.gr <- gwas.gr[!duplicated(gwas.gr$locus), ]
+
+nearest_tss_genes.gr <- find_nearest_genes(top.snps.gr, gene.annots, dist.to = "tss")
+saveRDS(nearest_tss_genes.gr, file.path(outdir, paste0("aFib_locus_top_SNP_nearest_tss.rds")))
+
+nearest_genebody_genes.gr <- find_nearest_genes(top.snps.gr, gene.annots, dist.to = "genebody")
+saveRDS(nearest_genebody_genes.gr, file.path(outdir, paste0("aFib_locus_top_SNP_nearest_genebody.rds")))
+```
+
+
+## Output summary tables
+
+Load gene mapping results
+
+```{r load-gene-mapping-result}
+gene.finemapping.res.l <- readRDS(file.path(outdir, "aFib_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_result.rds"))
+summary(gene.finemapping.res.l)
+
+genemapping_res <- gene.finemapping.res.l$full
+gene.pip.res <- gene.finemapping.res.l$genes
+```
+
+Make a Manhattan plot of the gene PIPs, and label genes with gene PIP > 0.8.
+
+```{r gene-manhattan-plot, fig.width=10, fig.height=6}
+gene_manhattan_plot(gene.pip.res, sig.pip = 0.8, title = "")
+```
+
+Add SNP annotations
+```{r snp-annots}
+annot.files <- list.files('/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/annotations_for_finemapping_hg19/',
+                                                                '*.bed', full.names = T)
+sumstat.annot <- mapgen::annotate_snps_binary(finemap.res, annot.files)
+
+sumstat.annot.temp <- sumstat.annot
+sumstat.annot.temp[, -1] <- ""
+sumstat.annot.temp$CM_specific_peaks_hg19.bed_d[sumstat.annot$CM_specific_peaks_hg19.bed_d > 0] <- "CM specific ATAC"
+sumstat.annot.temp$CM_nonDA_peaks_hg19.bed_d[sumstat.annot$CM_nonDA_peaks_hg19.bed_d > 0] <- "CM non-DA ATAC"
+sumstat.annot.temp$CM_shared_peaks_hg19.bed_d[sumstat.annot$CM_shared_peaks_hg19.bed_d > 0] <- "CM shared ATAC"
+sumstat.annot.temp$other_peaks_hg19.bed_d[sumstat.annot$other_peaks_hg19.bed_d > 0] <- "Non-CM ATAC"
+sumstat.annot.temp$Coding_UCSC.bed_d[sumstat.annot$Coding_UCSC.bed_d > 0] <- "Coding"
+sumstat.annot.temp$Conserved_LindbladToh.bed_d[sumstat.annot$Conserved_LindbladToh.bed_d > 0] <- "Conserved"
+sumstat.annot.temp$all_eqtls_hg19.bed_d[sumstat.annot$all_eqtls_hg19.bed_d > 0] <- "eQTL"
+
+annots <- rep("Unannotated", nrow(sumstat.annot))
+rows <- which(rowSums(sumstat.annot[,-1]) > 0)
+annots[rows] <- apply(sumstat.annot.temp[rows,-1], 1, function(x){paste(unique(x[x!=""]), collapse = ",")})
+
+snp.annots <- data.frame(snp=finemap.res$snp, annots=annots)
+
+genemapping.res <- dplyr::left_join(x = genemapping.res, y = snp.annots, by = "snp")
+genemapping.res <- genemapping.res[!is.na(genemapping.res$gene_name),]
+```
+
+```{r}
+saveRDS(genemapping_res, file.path(outdir, paste0("aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds")))
+```
+
+### prepare result tables
+
+#### Gene view
+```{r gene-view}
+genemapping_res <- readRDS(file.path(outdir, paste0("aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds")))
+genemapping_res <- ungroup(genemapping_res)
+genemapping_res$fractional_PIP <- genemapping_res$pip * genemapping_res$frac_pip
+
+gene.view.df <- genemapping_res %>% 
+    dplyr::select(gene_name, gene_pip, fractional_PIP) %>% 
+    group_by(gene_name) %>% 
+    summarise(gene_pip = round(gene_pip[1], 3), n_snps_frac_pip_2percent = sum(fractional_PIP > 0.02)) %>% 
+    filter(gene_pip > 0.1)
+
+cat(length(which(gene.view.df$gene_pip >= 0.5)), "genes with PIP >= 0.5 \n")
+cat(length(which(gene.view.df$gene_pip >= 0.8)), "genes with PIP >= 0.8 \n")
+```
+
+```{r}
+readr::write_csv(gene.view.df, file.path(outdir, 'aFib_Finemapped_GenePIP_0.1.csv'))
+```
+
+#### SNP view
+```{r snp-view-1}
+
+high.conf.snp.df <- genemapping_res[genemapping_res$fractional_PIP > 0.02,]
+
+snp.gene <- high.conf.snp.df %>% dplyr::select(snp, pos, gene_name)
+gene.locs.df <- gene.annots %>% as_tibble()
+gene.locs.df$TSS <- ifelse(gene.locs.df$strand=="+", gene.locs.df$start, gene.locs.df$end)
+
+snp.gene.dist <- snp.gene %>% left_join(., gene.locs.df, on = 'gene_name') %>%
+    mutate(dist = abs(TSS - pos)) %>%
+    dplyr::select(snp, gene_name, dist)
+
+high.conf.snp.df <- inner_join(high.conf.snp.df, snp.gene.dist, on = c('snp','gene_name'))
+```
+
+Add other annotations
+Downloaded ALL H3K27ac bed files from ENCODE for Aorta, Heart LV/RV/RA, and cardiac muscle, concatenated them into one bed file. 
+They were in Hg38 so converted them to Hg19 with liftOver.
+
+```{r snp-view-2}
+seqlevelsStyle(finemap.gr) <- "NCBI"
+files <- c('/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/hg19_mapped/H3K27ac_heart_concat.bed', 
+           '/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.bed.gz', 
+           '/project2/gca/aselewa/heart_atlas_project/ENCODE/FGT_ChIP_lifted_from_mm10.bed')
+annotated.snps <- lapply(files, function(x){get_elements_overlap_snps(snp.gr = finemap.gr, annotations = x)})
+```
+
+```{r snp-view-3, message=FALSE, warning=FALSE}
+for(i in 1:length(annotated.snps)){
+    high.conf.snp.df <- left_join(high.conf.snp.df, annotated.snps[[i]], on = 'snp')
+}
+```
+
+Add GTEx v8 eQTL data (Run R/prepare_eQTL_for_gwas_overlap.R to prepare)
+
+```{r snp-view-4, message=FALSE, warning=FALSE}
+eqtls.gr.hg19 <- readRDS('/project2/gca/aselewa/heart_atlas_project/misc/V8_Signif_eQTLs_lifted_hg19.rds')
+eqtls.gr.hg19.df <- eqtls.gr.hg19 %>% 
+  as_tibble() %>% 
+  mutate(varID = paste0(seqnames,'_',start)) %>% 
+  filter(!is.na(Symbol)) %>%
+  dplyr::select(varID, Symbol) %>% 
+  dplyr::rename(eQTL_Symbol=Symbol) %>%
+  group_by(varID) %>% 
+  summarise(eQTL_Symbols=paste0(eQTL_Symbol, collapse=';'))
+
+high.conf.snp.df <- high.conf.snp.df %>% mutate(varID = paste0(chr,'_',pos)) %>% left_join(., eqtls.gr.hg19.df) %>% dplyr::select(-varID)
+```
+
+Add TF disruption annotations
+
+```{r snp-view-5, message=FALSE, warning=FALSE}
+motifbreakr.res <- readRDS('/project2/gca/aselewa/heart_atlas_project/motifbreakR_Results/motifbreakR_cardiac_TFs_PIP20_06272021.rds')
+
+motif.breaks <- motifbreakr.res[motifbreakr.res$effect == "strong",]
+motif.breaks.tbl <- motif.breaks %>% as_tibble() %>% distinct(SNP_id, geneSymbol, .keep_all = T) %>% dplyr::select(SNP_id, geneSymbol, effect) %>%
+    mutate(tf.info = paste0(geneSymbol," - ", effect)) %>% dplyr::select(-geneSymbol, -effect) %>% dplyr::rename(SNP = SNP_id) %>%
+    group_by(SNP) %>% summarise(tf.info = paste0(tf.info, collapse=',')) %>% dplyr::rename(snp = SNP)
+
+high.conf.snp.df <- high.conf.snp.df %>% left_join(., motif.breaks.tbl)
+```
+
+Add nearest gene (distance to gene body)
+
+```{r snp-view-6, message=FALSE, warning=FALSE}
+seqlevelsStyle(finemap.gr) <- "UCSC"
+snp.nearest.gene.gr <- find_nearest_genes(finemap.gr, gene.annots, dist.to = "genebody")
+snp.nearest.gene.df <- as.data.frame(snp.nearest.gene.gr)[, c("snp", "nearest_gene")]
+high.conf.snp.df <- high.conf.snp.df %>% left_join(., snp.nearest.gene.df, on='snp')
+
+```
+
+
+SNP view table with fractional PIP > 0.02
+
+```{r snp-view-7}
+high.conf.snp.df <- high.conf.snp.df %>% 
+    dplyr::select(-weight, -frac_pip) %>% 
+    dplyr::rename(SNP = snp, `b37 bp` = pos, REF=ref, ALT=alt, PIP = pip, `Gene Linked` = gene_name, 
+                  `Gene PIP`=gene_pip, `Link Method`=category, `Distance to Gene`=dist, `Chromatin status`=annots,
+                  FetalHeart_DNase=`FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.gz`,
+                  AdultHeart_H3K27ac=H3K27ac_heart_concat,
+                  FGT_ChIPseq=FGT_ChIP_lifted_from_mm10,
+                  motif_break_strong = tf.info,
+                  `Nearest Gene` = nearest_gene) %>% 
+    mutate(PIP = round(PIP, 3), `Gene PIP` = round(`Gene PIP`, 3)) %>% 
+    arrange(chr, `b37 bp`) 
+```
+
+```{r}
+readr::write_csv(high.conf.snp.df, file.path(outdir, 'aFib_Finemapped_SNPView_fractionalPIP_0.02.csv'))
+```
+
+#### LD Block view
+
+```{r load-LD-blocks}
+data('Euro_LD_Chunks', package='mapgen')
+colnames(LD_Blocks) <- c("chr", "start", "end", "locus")
+ldblocks.gr <- GRanges(seqnames = paste0("chr",LD_Blocks$chr), ranges = IRanges(start = LD_Blocks$start, end = LD_Blocks$end), 
+                       locus=LD_Blocks$locus, 
+                       location = paste0("chr",LD_Blocks$chr, ":", LD_Blocks$start, "-",LD_Blocks$end))
+
+
+```
+
+Gene CS based on locus level gene PIP
+```{r gene-cs}
+gene.cs.l <- get_gene_cs(genemapping_res, by.locus = TRUE, gene.cs.percent.thresh = 0.8)
+gene.cs.df <- gene.cs.l$gene.cs.df
+gene.cumsum.df <- gene.cs.l$gene.cumsum.df
+locus.gene.pip.df <- gene.cs.l$locus.gene.pip.df
+
+saveRDS(gene.cs.l, file.path(outdir, 'aFib_Finemapped_gene_cs.rds'))
+```
+
+Distribution of gene CS sizes
+```{r gene-cs-size-barplot, fig.width=6, fig.height=4}
+gene.cs.df <- gene.cs.l$gene.cs.df
+gene.cumsum.df <- gene.cs.l$gene.cumsum.df
+
+gene.cs.df$gene_cs_size <- sapply(strsplit(gene.cs.df$gene_cs, split = ","), length)
+
+# gene.cs.size <- gene.cumsum.df %>% group_by(locus) %>% summarise(n=dplyr::n()) %>% .$n
+
+bks <- c(0, 1, 2, 3, 10000)
+labs <- c("1","2","3","4+")
+bin.count <- table(cut(gene.cs.df$gene_cs_size, breaks = bks, labels = labs))
+bin.count.df <- data.frame(Size=factor(names(bin.count), levels = rev(labs)), count=as.numeric(bin.count))
+bin.count.df$Size <- factor(labs, levels = labs)
+bin.count.df
+
+ggplot(bin.count.df, aes(x=Size, y = count)) +
+  geom_bar(stat = 'identity',  fill='lightgreen', width=0.7) +
+  xlab('Gene Credible Set Size') +
+  ylab('Gene Credible Sets') + 
+  theme_cowplot()
+```
+
+
+Assign true genes to LD blocks
+```{r load-true-genes}
+library(readxl)
+candidate_gene_table <- readxl::read_excel(file.path(data_dir, "AF_candidate_genes.xlsx"))
+true_genes <- str_trim(unlist(strsplit(na.omit(candidate_gene_table$Candidates), split = ",")))
+true.gene.locs.gr <- gene.annots[gene.annots$gene_name %in% true_genes, ]
+
+ldblocks.truegenes.gr <- plyranges::join_overlap_inner(ldblocks.gr, true.gene.locs.gr)
+ldblocks.truegenes.df <- as_tibble(ldblocks.truegenes.gr)[,c("locus", "gene_name")] %>% dplyr::rename(true_gene = gene_name)
+
+```
+
+Add nearest genes to LD blocks
+```{r load-nearest-genes}
+locus_topsnp_nearest_genes.df <- readRDS(file.path(outdir, "aFib_locus_top_SNP_nearest_genebody.rds")) %>% as_tibble() %>% dplyr::select(locus, nearest_gene)
+
+```
+
+
+```{r block-view}
+block.view.df <- left_join(gene.cs.df, locus_topsnp_nearest_genes.df, by = "locus") %>%
+  left_join(., ldblocks.truegenes.df, by = "locus") %>% 
+  group_by(locus) %>% 
+  summarise(`80% Gene Credible Set` =  paste0(unique(gene_cs), collapse=','),
+            `Top Genes` = paste0(unique(top_gene), collapse=','),
+            `Top Gene PIP` = paste0(unique(round(top_gene_pip,3)), collapse=','),
+            `Top Gene PIP (locus level)` = paste0(unique(round(top_locus_gene_pip,3)), collapse=','),
+            `True Gene` = paste0(unique(true_gene), collapse = ","),
+            `Nearest Gene` = paste0(unique(nearest_gene), collapse = ","))
+
+readr::write_csv(block.view.df, file.path(outdir, 'aFib_Finemapped_LDBlockView.csv'))
+```
+
+LD Block view v2, added locus location, Nielsen locus and Nielsen nominated genes
+
+```{r Nielsen-genes}
+nielsen_snp_genes <- suppressMessages(readr::read_csv('/project2/gca/aselewa/heart_atlas_project/GWAS/Nielsen_snps_prior_genes.csv', col_names = T)) %>% dplyr::rename(snp = rsID)
+snp.pos <- as.integer(sub("chr.*:","",nielsen_snp_genes$`Position (hg19)`))
+
+# From Nielsen et al. Nat Genet (2018): Loci borders were defined as the highest and lowest genomic positions 
+# within the locus reaching genome-wide significance plus an additional 1 Mb on either side.
+top.snp.gr <- GRanges(seqnames = sub(":.*","",nielsen_snp_genes$`Position (hg19)`), ranges = IRanges(start = snp.pos, end = snp.pos)) + 1e6
+top.snp.gr$snp <- nielsen_snp_genes$snp
+top.snp.gr$nielsen_locus <- nielsen_snp_genes$`Locus No.`
+top.snp.gr$genes_prioritized <- nielsen_snp_genes$`Prioritized genes`
+
+nielsen.locus.map <- plyranges::join_overlap_inner(top.snp.gr, ldblocks.gr) %>% as_tibble() %>% dplyr::select(locus, location, nielsen_locus, genes_prioritized)
+
+```
+
+```{r block-view-v2-with-nielsen-genes}
+block.view.v2.df <- left_join(gene.cs.df, ldblocks.truegenes.df, by = "locus") %>%
+  left_join(., locus_topsnp_nearest_genes.df, by = "locus") %>%
+  left_join(., nielsen.locus.map, by = "locus") %>%  
+  group_by(locus) %>% 
+  summarise(`80% Gene Credible Set` =  paste0(unique(gene_cs), collapse=','),
+            `Top Genes` = paste0(unique(top_gene), collapse=','),
+            `Top Gene PIP (locus level)` = paste0(unique(round(top_locus_gene_pip,3)), collapse=','),
+            `Top Gene PIP` = paste0(unique(round(top_gene_pip,3)), collapse=','),
+            `True Gene` = paste0(unique(true_gene), collapse = ","),
+            `Nearest Gene` = paste0(unique(nearest_gene), collapse = ","),
+            `Matched Nielsen Locus` = paste0(unique(nielsen_locus), collapse = ","),
+            `Nominated genes (Nielsen)` = paste0(unique(genes_prioritized), collapse = ","))
+
+block.view.v2.df$`True Gene`[block.view.v2.df$`True Gene` == "NA"] <- " "
+
+block.view.v2.df$location <- ldblocks.gr$location[match(block.view.v2.df$locus, ldblocks.gr$locus)]
+
+readr::write_csv(block.view.v2.df, file.path(outdir, 'aFib_Finemapped_LDBlockView_Nielsen_V2.csv'))
+```
+
+

@@ -1,0 +1,643 @@
+---
+title: "Example gene trackplots"
+output:
+  workflowr::wflow_html:
+    code_folding: hide
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r knitr-opts, include=FALSE}
+knitr::opts_chunk$set(fig.align = "center")
+```
+
+Load packages and some functions used in this analysis
+```{r load-packages, message=FALSE, warning=FALSE}
+suppressMessages(library(data.table))
+suppressMessages(library(tidyverse))
+suppressMessages(library(GenomicRanges))
+suppressMessages(library(AnnotationDbi)) # match gene ID to gene symbol
+suppressMessages(library(org.Hs.eg.db)) # match gene ID to gene symbol
+suppressMessages(library(GenomicInteractions)) # visualize HiC plots
+suppressMessages(library(rtracklayer)) # loading bigwigs/bed files
+suppressMessages(library(bigsnpr)) # loading genotype data from 1000Genomes for LD calculation
+suppressMessages(library(Gviz)) # make track plots
+library(mapgen)
+source("../code/mapgen_trackplots.R")
+```
+
+Settings
+```{r settings}
+data_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping"
+genomic_annots_file <- file.path(data_dir, "GWAS_gene_mapping_annots_hg19.gr.rds")
+ABC_file <- file.path(data_dir, "/ABC/Nasser2021/tissues/heart_ventricle-ENCODE_ABC.tsv.gz")
+H3K27ac_file <- "/project2/xinhe/shared_data/aFib_gene_finemapping/trackplots/H3K27ac_heart_concat.bed"
+DHS_file <- "/project2/xinhe/shared_data/aFib_gene_finemapping/trackplots/FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.bed.gz"
+
+finemapping_file <- "/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_torusprior_122loci.rds"
+genemapping_res_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_mapping_result_latest_noAtrium_nonDA_newSuSiE/"
+```
+
+## Load annotations, finemapping and gene mapping results
+
+Load finemapping results
+```{r load-finemapping-res}
+finemapstats <- readRDS(finemapping_file) %>% dplyr::rename(pip = susie_pip)
+finemapstats.gr <- process_finemapping_sumstats(finemapstats, 
+                                                        snp = 'snp', chr = 'chr', 
+                                                        pos = 'pos', pip = 'pip', 
+                                                        pval = 'pval', zscore = 'zscore', 
+                                                        cs = 'CS', locus = 'locus',  
+                                                        pip.thresh = 0)
+```
+
+Load annotations
+```{r load-gene-annot, message=FALSE, warning=FALSE}
+genomic.annots <- readRDS(genomic_annots_file)
+gene.annots <- genomic.annots$genes
+
+gene.locations <- as.data.frame(gene.annots)[, c("seqnames", "start", "end", "gene_name", "strand")]
+gene.locations <- gene.locations %>% dplyr::rename(chr = seqnames) %>% mutate(tss = start(resize(gene.annots, width = 1)))
+
+# PC-HiC
+pcHiC.gr <- genomic.annots$HiC
+pcHiC.gr <- pcHiC.gr[pcHiC.gr$gene_name %in% gene.annots$gene_name,] # restrict to protein coding genes
+
+# ABC
+ABC.gr  <- process_ABC(fread(ABC_file), ABC.thresh = 0.015, full.element = TRUE, flank = 0)
+ABC.gr <- ABC.gr[ABC.gr$gene_name %in% gene.annots$gene_name, ] # restrict to protein coding genes
+ABC.gr$promoter_chr <- seqnames(ABC.gr)
+ABC.gr$promoter_start <- ABC.gr$TargetGeneTSS
+ABC.gr$promoter_end <- ABC.gr$TargetGeneTSS
+ABC.gr$score <- ABC.gr$ABC.Score * 100
+
+# H3K27ac
+H3K27ac_peaks <- rtracklayer::import(H3K27ac_file)
+
+# Fetal DHS
+DHS_peaks <- rtracklayer::import(DHS_file)
+```
+
+Load gene mapping results
+```{r load-gene-mapping-result}
+genemapping_res <- readRDS(file.path(genemapping_res_dir, "aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds"))
+genemapping_res$fractional_PIP <- genemapping_res$pip * genemapping_res$frac_pip
+
+m <- match(genemapping_res$snp, finemapstats$snp)
+genemapping_res$pval <- finemapstats$pval[m]
+genemapping_res$zscore <- finemapstats$zscore[m]
+
+high.conf.snp.df <- fread(file.path(genemapping_res_dir, 'aFib_Finemapped_cleaned_SNPView_fractionalPIP_0.02.csv'))
+gene.view.df <- fread(file.path(genemapping_res_dir, 'aFib_Finemapped_GenePIP_0.1.csv'))
+block.view.df <- fread(file.path(genemapping_res_dir, 'aFib_Finemapped_LDBlockView_Nielsen_V2.csv'))
+```
+
+```{r prepare-trackplot-data, message=FALSE, warning=FALSE}
+# Load the txdb object of the gene annotations
+txdb <- AnnotationDbi::loadDb("/project2/xinhe/kevinluo/gene-level-finemapping/annot/gene_annotations/gencode.v19.annotation.gtf.sqlite")
+big.snp <- bigsnpr::snp_attach('/project2/xinhe/1kg/bigsnpr/EUR_variable_1kg.rds')
+
+atac_data.dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/trackplots/"
+atac_data_files <- c(file.path(atac_data.dir, "Hg19_Cardiomyocyte-TileSize-500-normMethod-ReadsInTSS-ArchR.bw.bedGraph"),
+                     file.path(atac_data.dir, "Hg19_Endothelial-TileSize-500-normMethod-ReadsInTSS-ArchR.bw.bedGraph"),
+                     file.path(atac_data.dir, "Hg19_Fibroblast-TileSize-500-normMethod-ReadsInTSS-ArchR.bw.bedGraph"))
+
+atac_data <- lapply(atac_data_files, function(x){rtracklayer::import(x)})
+names(atac_data) <- c("CM", "Endo", "Fibro")
+
+peaks <- list("H3K27ac" = H3K27ac_peaks, "Fetal DHS" = DHS_peaks)
+```
+
+## Gene trackplots
+
+### CALU
+
+```{r CALU-info}
+genes_of_interest <- c("CALU", "OPN1SW")
+(genes.df <- gene.locations %>% filter(gene_name %in% genes_of_interest))
+
+high.conf.snp.df %>% filter(`Gene Linked` %in% genes_of_interest) %>% arrange(-PIP) %>% as.data.frame()
+
+block.view.df[block.view.df$locus == 821, ]
+```
+
+```{r CALU-trackplot, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+region <- mapgen:::get_gene_region(genemapping_res, "CALU", ext = 10000)
+start(region) <- 128.375*1e6
+end(region) <- 128.425*1e6
+
+atac_data <- lapply(atac_data_files, function(x){rtracklayer::import(x)})
+names(atac_data) <- c("CM", "Endo", "Fibro")
+
+peaks <- list("H3K27ac" = H3K27ac_peaks, "Fetal DHS" = DHS_peaks)
+HiC_loops <- list("PC-HiC" = pcHiC.gr)
+
+track.sizes <- c(1, 0.5, 
+                 rep(0.2, length(atac_data)),
+                 rep(0.1, length(peaks)), 
+                 rep(0.6, length(HiC_loops)),
+                 0.5, 0.4)
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = "CALU",
+                            HiC_loop_color = "gray", 
+                            highlight_snps = "topSNP",
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "left",
+                            verbose = FALSE)
+```
+
+```{r CALU-trackplot-2, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = "CALU",
+                            filter_HiCloops_snps = "rs55985730",
+                            HiC_loop_color = "red", 
+                            highlight_snps = "topSNP",
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "left",
+                            verbose = FALSE)
+```
+
+### FGF9
+
+```{r FGF9-info}
+genes_of_interest <- c("FGF9", "SGCG")
+(genes.df <- gene.locations %>% filter(gene_name %in% genes_of_interest))
+
+high.conf.snp.df %>% filter(`Gene Linked` %in% genes_of_interest) %>% arrange(-PIP) %>% as.data.frame()
+
+block.view.df[block.view.df$locus == 1264, ]
+```
+
+```{r FGF9-trackplot, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+region <- mapgen:::get_gene_region(genemapping_res, "FGF9", ext = 24000)
+start(region) <- 22.2*1e6
+end(region) <- 23.6*1e6
+
+HiC_loops <- list("PC-HiC" = pcHiC.gr)
+
+track.sizes <- c(1, 0.5, 
+                 rep(0.2, length(atac_data)),
+                 rep(0.1, length(peaks)), 
+                 rep(0.6, length(HiC_loops)),
+                 0.5, 0.4)
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = "FGF9",
+                            highlight_snps = "topSNP",
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+
+```{r FGF9-trackplot-2, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+start(region) <- 22.2*1e6
+end(region) <- 23.9*1e6
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = "FGF9",
+                            highlight_snps = "topSNP",
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+
+
+### rs7172038 HCN4
+
+```{r rs7172038-HCN4-info}
+genes_of_interest <- c("HCN4")
+(genes.df <- gene.locations %>% filter(gene_name %in% genes_of_interest))
+
+high.conf.snp.df %>% filter(`Gene Linked` %in% genes_of_interest) %>% arrange(-PIP) %>% as.data.frame()
+
+block.view.df[block.view.df$locus == 1414, ]
+```
+
+```{r HCN4-trackplot, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+HiC_loops <- list("ABC" = ABC.gr)
+
+track.sizes <- c(1, 0.5, 
+                 rep(0.2, length(atac_data)),
+                 rep(0.1, length(peaks)), 
+                 rep(0.6, length(HiC_loops)),
+                 0.5, 0.4)
+
+region <- mapgen:::get_gene_region(genemapping_res, "HCN4", ext = 10000)
+
+start(region) <- 73.61*1e6
+end(region) <- 73.70*1e6
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = "HCN4",
+                            highlight_snps = "topSNP",
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+
+### rs35620480 GATA4
+
+```{r rs35620480-GATA4-info}
+genes_of_interest <- c("GATA4")
+(genes.df <- gene.locations %>% filter(gene_name %in% genes_of_interest))
+
+high.conf.snp.df %>% filter(`Gene Linked` %in% genes_of_interest) %>% arrange(-PIP) %>% as.data.frame()
+
+block.view.df[block.view.df$locus == 857, ]
+```
+
+```{r GATA4-trackplot, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+region <- mapgen:::get_gene_region(genemapping_res, "GATA4", ext = 10000)
+end(region) <- 11617600
+
+HiC_loops <- list("PC-HiC" = pcHiC.gr, "ABC" = ABC.gr)
+
+track.sizes <- c(1, 0.5, 
+                 rep(0.2, length(atac_data)),
+                 rep(0.1, length(peaks)), 
+                 rep(0.6, length(HiC_loops)),
+                 0.5, 0.4)
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = "GATA4",
+                            highlight_snps = "topSNP",
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+
+
+### rs1152591 AKAP5
+
+```{r rs1152591-AKAP5-info}
+genes_of_interest <- c("AKAP5")
+(genes.df <- gene.locations %>% filter(gene_name %in% genes_of_interest))
+
+high.conf.snp.df %>% filter(`Gene Linked` %in% genes_of_interest) %>% arrange(-PIP) %>% as.data.frame()
+
+block.view.df[block.view.df$locus == 1352, ]
+```
+
+```{r AKAP5-trackplot, include=FALSE, eval=FALSE, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+
+HiC_loops <- list("PC-HiC" = pcHiC.gr)
+
+track.sizes <- c(1, 0.5, 
+                 rep(0.2, length(atac_data)),
+                 rep(0.1, length(peaks)), 
+                 rep(0.6, length(HiC_loops)),
+                 0.5, 0.4)
+
+region <- mapgen:::get_gene_region(genemapping_res, "AKAP5", ext = 10000)
+start(region) <- 64680000
+end(region) <- 64932250
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = "AKAP5",
+                            highlight_snps = "topSNP",
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+
+
+### rs1152591 with PC-HiC links to multiple genes
+
+```{r rs1152591-info}
+high.conf.snp.df %>% filter(`Gene Linked` %in% genes_of_interest) %>% arrange(-PIP) %>% as.data.frame()
+
+block.view.df[block.view.df$locus == 1352, ]
+```
+
+```{r rs1152591-trackplot, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+HiC_loops <- list("PC-HiC" = pcHiC.gr)
+
+track.sizes <- c(1, 0.5, 
+                 rep(0.2, length(atac_data)),
+                 rep(0.1, length(peaks)), 
+                 rep(0.6, length(HiC_loops)),
+                 0.5, 0.4)
+
+region <- mapgen:::get_gene_region(genemapping_res, "AKAP5", ext = 10000)
+start(region) <- 64.255*1e6
+end(region) <- 65.215*1e6
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = c("AKAP5", "SYNE2", "ESR2", "PLEKHG3"),
+                            highlight_snps = "rs1152591", 
+                            HiC_loop_color = "gray", 
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+```{r rs1152591-trackplot-2, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = c("AKAP5", "SYNE2", "ESR2", "PLEKHG3"),
+                            filter_HiCloops_snps = "rs1152591",
+                            HiC_loop_color = "red", 
+                            highlight_snps = "rs1152591", 
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+
+## Genes with diffused PIP signals
+```{r}
+highPIP.genes <- high.conf.snp.df %>% 
+  dplyr::filter(`Gene PIP` >= 0.8) %>% 
+  group_by(`Gene Linked`) %>%
+  summarise(gene_PIP= unique(`Gene PIP`), maxPIP = max(PIP), minPIP = min(PIP), n_SNPs = length(SNP)) %>% 
+  dplyr::rename("Gene" = `Gene Linked`)
+
+length(which(highPIP.genes$maxPIP >= 0.5))
+length(which(highPIP.genes$maxPIP < 0.5))
+
+highPIP.genes %>% dplyr::filter(maxPIP < 0.5) %>% arrange(-gene_PIP)
+```
+
+```{r}
+high.conf.snp.df %>% filter(`Gene Linked` == "NKX2-5")
+
+high.conf.snp.df %>% filter(`Gene Linked` == "GJA5")
+```
+
+
+### GJA5
+
+```{r GJA5-info}
+genes_of_interest <- c("GJA5")
+(genes.df <- gene.locations %>% filter(gene_name %in% genes_of_interest))
+
+high.conf.snp.df %>% filter(`Gene Linked` %in% genes_of_interest) %>% arrange(-PIP) %>% as.data.frame()
+
+block.view.df[block.view.df$locus == 74, ]
+```
+
+```{r GJA5-trackplot, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+HiC_loops <- list("PC-HiC" = pcHiC.gr)
+
+track.sizes <- c(1, 0.5, 
+                 rep(0.2, length(atac_data)),
+                 rep(0.1, length(peaks)), 
+                 rep(0.6, length(HiC_loops)),
+                 0.5, 0.4)
+
+region <- mapgen:::get_gene_region(genemapping_res, "GJA5", ext = 10000)
+start(region) <- 147.1*1e6
+end(region) <- 147.4*1e6
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            HiC_loop_color = "gray", 
+                            filter_HiCloops_genes = "GJA5",
+                            highlight_snps = c("rs77459137", "rs75523969", "rs79187193","rs75663428", "rs79487014"), 
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+```{r GJA5-trackplot-filter-HiCloops-snps, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            HiC_loop_color = "red", 
+                            filter_HiCloops_genes = "GJA5",
+                            filter_HiCloops_snps = c("rs77459137", "rs75523969", "rs79187193","rs75663428", "rs79487014"),
+                            highlight_snps = c("rs77459137", "rs75523969", "rs79187193","rs75663428", "rs79487014"), 
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+
+### NKX2-5
+
+```{r NKX2-5-info}
+genes_of_interest <- c("NKX2-5")
+(genes.df <- gene.locations %>% filter(gene_name %in% genes_of_interest))
+
+high.conf.snp.df %>% filter(`Gene Linked` %in% genes_of_interest) %>% arrange(-PIP) %>% as.data.frame()
+
+block.view.df[block.view.df$locus == 624, ]
+```
+
+```{r NKX2-5-trackplot, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+HiC_loops <- list("ABC" = ABC.gr)
+
+track.sizes <- c(1, 0.5, 
+                 rep(0.2, length(atac_data)),
+                 rep(0.1, length(peaks)), 
+                 rep(0.6, length(HiC_loops)),
+                 0.5, 0.4)
+
+region <- mapgen:::get_gene_region(genemapping_res, "NKX2-5", ext = 10000)
+start(region) <- 172.47*1e6
+end(region) <- 172.72*1e6
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = "NKX2-5",
+                            highlight_snps = c("rs6891790", "rs10071514"), 
+                            HiC_loop_color = "gray", 
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```
+
+```{r NKX2-5-trackplot-2, dev=c('png', 'pdf'), fig.width=12, fig.height=8, warning=FALSE}
+
+finemapping_annot_trackplot(finemapstats.gr,
+                            region,
+                            gene.annots,
+                            bigSNP = big.snp,
+                            genome = "hg19",
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data,
+                            data_colors = c("red", "green", "purple"),
+                            data_ylim = c(0,0.8),
+                            peaks = peaks,
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = "NKX2-5",
+                            filter_HiCloops_snps = c("rs6891790", "rs10071514"), 
+                            highlight_snps = c("rs6891790", "rs10071514"), 
+                            HiC_loop_color = "red", 
+                            track.sizes = track.sizes,
+                            rotation.title = 0,
+                            genelabel_side = "above",
+                            verbose = FALSE)
+
+```

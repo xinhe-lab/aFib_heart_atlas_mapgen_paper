@@ -1,0 +1,643 @@
+---
+title: "Compare finemapping results between using functional (TORUS) prior vs. uniform and other prior types"
+output:
+  workflowr::wflow_html:
+    code_folding: hide
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r knitr-opts, include=FALSE}
+knitr::opts_chunk$set(results = "hold", fig.align = "center")
+```
+
+Load packages and some functions used in this analysis
+```{r load-packages, message=FALSE, warning=FALSE}
+suppressMessages(library(data.table))
+suppressMessages(library(GenomicRanges))
+suppressMessages(library(tidyverse))
+library(mapgen)
+library(ggplot2)
+library(cowplot)
+library(ggvenn)
+```
+
+Load finemapping results
+```{r}
+data.dir <- '/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/'
+
+finemap_torus_prior_res <- readRDS(file.path(data.dir, 'AF_finemapping_result_torusprior_122loci.rds'))
+
+finemap_unif_prior_res <- readRDS(file.path(data.dir, 'AF_finemapping_result_unifprior_122loci.rds'))
+
+finemap_shuffled_prior_res <- readRDS(file.path(data.dir, 'AF_finemapping_result_shuffledprior_122loci.rds'))
+
+finemap_genebody_prior_res <- readRDS(file.path(data.dir, 'AF_finemapping_result_genebody.setprior_122loci.rds'))
+
+finemap_tss20kb_prior_res <- readRDS(file.path(data.dir, 'AF_finemapping_result_TSS20kb.setprior_122loci.rds'))
+
+```
+
+Add SNP annotations
+```{r snp-annots, message=FALSE, results='hide'}
+annot_bed_files <- list.files(file.path(data.dir, 'annotations_for_finemapping_hg19'), '*.bed', full.names = T)
+print(annot_bed_files)
+
+finemap_torus_prior_annot <- annotate_snps_binary(finemap_torus_prior_res, annot_bed_files, keep.annot.only=FALSE)
+finemap_unif_prior_annot <- annotate_snps_binary(finemap_unif_prior_res, annot_bed_files, keep.annot.only=FALSE)
+finemap_shuffled_prior_annot <- annotate_snps_binary(finemap_shuffled_prior_res, annot_bed_files, keep.annot.only=FALSE)
+finemap_genebody_prior_annot <- annotate_snps_binary(finemap_genebody_prior_res, annot_bed_files, keep.annot.only=FALSE)
+finemap_tss20kb_prior_annot <- annotate_snps_binary(finemap_tss20kb_prior_res, annot_bed_files, keep.annot.only=FALSE)
+```
+
+TORUS enrichment result
+```{r torus-enrichment, dev=c("png", "pdf"), fig.width=10, fig.height=6}
+torus.result <- readRDS(file.path(data.dir, 'Torus_Enrichment_Results_Joint.rds'))
+enrich.res <- torus.result$enrich
+enrich.res <- enrich.res[enrich.res$term != "Intercept",]
+enrich.res$term[enrich.res$term == "CM_specific_peaks_hg19.bed.1"] <- "CM-specific"
+enrich.res$term[enrich.res$term == "CM_nonDA_peaks_hg19.bed.1"] <- "CM non-DA"
+enrich.res$term[enrich.res$term == "CM_shared_peaks_hg19.bed.1"] <- "CM-shared"
+enrich.res$term[enrich.res$term == "other_peaks_hg19.bed.1"] <- "Non-CM"
+enrich.res$term[enrich.res$term == "Coding_UCSC.bed.1"] <- "Coding"
+enrich.res$term[enrich.res$term == "Conserved_LindbladToh.bed.1"] <- "Conserved"
+enrich.res$term[enrich.res$term == "all_eqtls_hg19.bed.1"] <- "finemapped eQTLs"
+enrich.res$term <- factor(enrich.res$term, 
+                          levels = rev(c("CM-specific", "CM non-DA", "CM-shared", "Non-CM", "finemapped eQTLs", "Coding", "Conserved")))
+
+ggplot(enrich.res,aes(x = estimate/log(2), y = term))+
+  geom_point()+
+  geom_errorbarh(aes(xmin = low/log(2), xmax = high/log(2), height = 0.1))+ 
+  theme_bw()  + 
+  xlab("Log2 enrichment")+
+  geom_vline(xintercept = 0,linetype="dotted", colour = "red")+
+  theme(axis.ticks = element_blank(),  panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), 
+        axis.text = element_text(face="bold",size = 12, colour = "black"),
+        axis.title = element_text(face="bold",size = 12),strip.text = element_text(face="bold",size = 12), panel.spacing.x = unit(0.6,units = "cm"), axis.title.y = element_blank(), legend.position = "none" ) +
+  coord_cartesian(xlim = c(-4,8)) 
+
+rm(torus.result)
+```
+
+
+### Functional prior from TORUS
+
+```{r functional-prior}
+finemap_torus_prior_annot_highPIP_res <- finemap_torus_prior_annot %>% 
+  dplyr::rename(CM_shared = CM_shared_peaks_hg19.bed_d, 
+                CM_specific = CM_specific_peaks_hg19.bed_d, 
+                CM_non_DA = CM_nonDA_peaks_hg19.bed_d, 
+                non_CM = other_peaks_hg19.bed_d, 
+                eQTLs = all_eqtls_hg19.bed_d,
+                coding = Coding_UCSC.bed_d, 
+                conserved = Conserved_LindbladToh.bed_d) %>% 
+  filter(susie_pip >= 0.5)
+
+sprintf("%d SNPs with PIP >= 0.5", length(unique(finemap_torus_prior_annot_highPIP_res$snp)))
+colSums(finemap_torus_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA", "non_CM", "eQTLs", "coding", "conserved")])
+```
+
+### Uniform prior
+
+```{r unif-prior}
+finemap_unif_prior_annot_highPIP_res <- finemap_unif_prior_annot %>% 
+  dplyr::rename(CM_shared = CM_shared_peaks_hg19.bed_d, 
+                CM_specific = CM_specific_peaks_hg19.bed_d, 
+                CM_non_DA = CM_nonDA_peaks_hg19.bed_d, 
+                non_CM = other_peaks_hg19.bed_d, 
+                eQTLs = all_eqtls_hg19.bed_d,
+                coding = Coding_UCSC.bed_d, 
+                conserved = Conserved_LindbladToh.bed_d) %>% 
+  filter(susie_pip >= 0.5)
+
+sprintf("%d SNPs with PIP >= 0.5", length(unique(finemap_unif_prior_annot_highPIP_res$snp)))
+colSums(finemap_unif_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA", "non_CM", "eQTLs", "coding", "conserved")])
+```
+
+### Shuffled prior
+
+Shuffled prior result (randomly shuffled TORUS prior)
+```{r shuffled-prior}
+finemap_shuffled_prior_annot_highPIP_res <- finemap_shuffled_prior_annot %>% 
+  dplyr::rename(CM_shared = CM_shared_peaks_hg19.bed_d, 
+                CM_specific = CM_specific_peaks_hg19.bed_d, 
+                CM_non_DA = CM_nonDA_peaks_hg19.bed_d, 
+                non_CM = other_peaks_hg19.bed_d, 
+                eQTLs = all_eqtls_hg19.bed_d,
+                coding = Coding_UCSC.bed_d, 
+                conserved = Conserved_LindbladToh.bed_d) %>% 
+  filter(susie_pip >= 0.5)
+
+sprintf("%d SNPs with PIP >= 0.5", length(unique(finemap_shuffled_prior_annot_highPIP_res$snp)))
+colSums(finemap_shuffled_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA", "non_CM", "eQTLs", "coding", "conserved")])
+```
+
+### gene body prior result
+
+SNPs in gene body are set with prior weights 10 times higher than SNPs outside gene body
+```{r gene-body-prior}
+finemap_genebody_prior_annot_highPIP_res <- finemap_genebody_prior_annot %>% 
+  dplyr::rename(CM_shared = CM_shared_peaks_hg19.bed_d, 
+                CM_specific = CM_specific_peaks_hg19.bed_d, 
+                CM_non_DA = CM_nonDA_peaks_hg19.bed_d, 
+                non_CM = other_peaks_hg19.bed_d, 
+                eQTLs = all_eqtls_hg19.bed_d,
+                coding = Coding_UCSC.bed_d, 
+                conserved = Conserved_LindbladToh.bed_d) %>% 
+  filter(susie_pip >= 0.5)
+
+sprintf("%d SNPs with PIP >= 0.5", length(unique(finemap_genebody_prior_annot_highPIP_res$snp)))
+colSums(finemap_genebody_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA", "non_CM", "eQTLs", "coding", "conserved")])
+```
+
+### TSS 20kb prior result
+
+SNPs within 20kb from TSS are set with prior weights 10 times higher
+```{r tss-prior}
+finemap_tss20kb_prior_annot_highPIP_res <- finemap_tss20kb_prior_annot %>% 
+  dplyr::rename(CM_shared = CM_shared_peaks_hg19.bed_d, 
+                CM_specific = CM_specific_peaks_hg19.bed_d, 
+                CM_non_DA = CM_nonDA_peaks_hg19.bed_d, 
+                non_CM = other_peaks_hg19.bed_d, 
+                eQTLs = all_eqtls_hg19.bed_d,
+                coding = Coding_UCSC.bed_d, 
+                conserved = Conserved_LindbladToh.bed_d) %>% 
+  filter(susie_pip >= 0.5)
+
+sprintf("%d SNPs with PIP >= 0.5", length(unique(finemap_tss20kb_prior_annot_highPIP_res$snp)))
+colSums(finemap_tss20kb_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA", "non_CM", "eQTLs", "coding", "conserved")])
+```
+
+### Compare distributions of high PIP variants 
+
+Number of SNPs with PIP >= 0.5 that are in CM OCRs
+
+```{r n_highPIP_snps_barplot, dev = c("png", "pdf"), fig.width=10, fig.height=7}
+
+df <- data.frame(prior_type = c("Functional prior", 
+                                "uniform prior", 
+                                "shuffled prior", 
+                                "gene body prior", 
+                                "TSS 20kb prior"),
+                 N_highPIP_SNPs = c(nrow(finemap_torus_prior_annot_highPIP_res), 
+                                    nrow(finemap_unif_prior_annot_highPIP_res),
+                                    nrow(finemap_shuffled_prior_annot_highPIP_res), 
+                                    nrow(finemap_genebody_prior_annot_highPIP_res),
+                                    nrow(finemap_tss20kb_prior_annot_highPIP_res)))
+
+print(df)
+
+df$prior_type <- factor(df$prior_type, levels = c("Functional prior",  "uniform prior", "shuffled prior", "gene body prior", "TSS 20kb prior"))
+
+df$group <- c(1, 2, rep(3, 3))
+
+df$prior_type <- factor(df$prior_type, rev(levels(df$prior_type)))
+
+# make barplot
+ggplot(data=df, aes(x=N_highPIP_SNPs, y=reorder(prior_type, -group), fill = group)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Number of high PIP (>= 0.5) SNPs", y = "") +
+  theme_cowplot() +
+  theme(legend.position = "none") 
+```
+
+Number of SNPs with PIP >= 0.5 that are in CM OCRs
+
+```{r n_highPIP_CMOCR_snps_barplot, dev = c("png", "pdf"), fig.width=10, fig.height=7}
+n_highPIP_CM.OCR_SNPs_torus_prior <- length(which(rowSums(finemap_torus_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA")]) > 0))
+n_highPIP_CM.OCR_SNPs_unif_prior <- length(which(rowSums(finemap_unif_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA")]) > 0))
+n_highPIP_CM.OCR_SNPs_shuffled_prior <- length(which(rowSums(finemap_shuffled_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA")]) > 0))
+n_highPIP_CM.OCR_SNPs_genebody_prior <- length(which(rowSums(finemap_genebody_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA")]) > 0))
+n_highPIP_CM.OCR_SNPs_tss20kb_prior <- length(which(rowSums(finemap_tss20kb_prior_annot_highPIP_res[, c("CM_specific", "CM_shared", "CM_non_DA")]) > 0))
+
+df <- data.frame(prior_type = c("Functional prior", 
+                                "uniform prior", 
+                                "shuffled prior", 
+                                "gene body prior", 
+                                "TSS 20kb prior"),
+                 N_highPIP_SNPs = c(nrow(finemap_torus_prior_annot_highPIP_res), 
+                                    nrow(finemap_unif_prior_annot_highPIP_res),
+                                    nrow(finemap_shuffled_prior_annot_highPIP_res), 
+                                    nrow(finemap_genebody_prior_annot_highPIP_res),
+                                    nrow(finemap_tss20kb_prior_annot_highPIP_res)),
+                 N_highPIP_CM.OCR_SNPs = c(n_highPIP_CM.OCR_SNPs_torus_prior,  
+                                           n_highPIP_CM.OCR_SNPs_unif_prior, 
+                                           n_highPIP_CM.OCR_SNPs_shuffled_prior, 
+                                           n_highPIP_CM.OCR_SNPs_genebody_prior,
+                                           n_highPIP_CM.OCR_SNPs_tss20kb_prior))
+
+print(df)
+
+df$prior_type <- factor(df$prior_type, levels = c("Functional prior",  "uniform prior", "shuffled prior", "gene body prior", "TSS 20kb prior"))
+
+df$group <- c(1, 2, rep(3, 3))
+
+df$prior_type <- factor(df$prior_type, rev(levels(df$prior_type)))
+
+# make barplot
+ggplot(data=df, aes(x=N_highPIP_CM.OCR_SNPs, y=reorder(prior_type, -group), fill = group)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Number of high PIP (>= 0.5) SNPs in CM OCRs", y = "") +
+  theme_cowplot() +
+  theme(legend.position = "none")
+```
+
+Compare PIP distributions of different priors 
+
+```{r histogram-pip-bin-priors,  dev = c("png", "pdf"), fig.width=10, fig.height=10}
+
+bks <- c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1)
+labs <- c("10-20%","20-30%","30-40%","40-50%","50-60%","60-70%","70-80%","80-90%",">90%")
+bin.count <- table(cut(finemap_torus_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.torus.df <- data.frame(count=as.numeric(bin.count), 
+                                 pip.bin=factor(names(bin.count), levels = labs),
+                                 prior = "functional")
+
+p1 <- ggplot(bin.count.torus.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='midnightblue') + 
+  theme_cowplot() + 
+  xlab('PIP (functional prior)') + ylab('Number of SNPs') + 
+  coord_cartesian(ylim = c(0, 120)) 
+
+# uniform
+bin.count <- table(cut(finemap_unif_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.unif.df <- data.frame(count=as.numeric(bin.count), 
+                                pip.bin=factor(names(bin.count), levels = labs),
+                                prior = "uniform")
+
+p2 <- ggplot(bin.count.unif.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='dodgerblue4') + 
+  theme_cowplot() + 
+  xlab('PIP (uniform prior)') + ylab('Number of SNPs')+ 
+  coord_cartesian(ylim = c(0, 120)) 
+
+# shuffled
+bin.count <- table(cut(finemap_shuffled_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.shuffled.df <- data.frame(count=as.numeric(bin.count), 
+                                pip.bin=factor(names(bin.count), levels = labs),
+                                prior = "shuffled")
+
+p3 <- ggplot(bin.count.shuffled.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='dodgerblue') + 
+  theme_cowplot() + 
+  xlab('PIP (shuffled prior)') + ylab('Number of SNPs')+ 
+  coord_cartesian(ylim = c(0, 120)) 
+
+# gene body
+bin.count <- table(cut(finemap_genebody_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.genebody.df <- data.frame(count=as.numeric(bin.count), 
+                                pip.bin=factor(names(bin.count), levels = labs),
+                                prior = "gene body")
+
+p4 <- ggplot(bin.count.genebody.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='dodgerblue') + 
+  theme_cowplot() + 
+  xlab('PIP (gene body prior)') + ylab('Number of SNPs')+ 
+  coord_cartesian(ylim = c(0, 120)) 
+
+# TSS
+# gene body
+bin.count <- table(cut(finemap_tss20kb_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.tss20kb.df <- data.frame(count=as.numeric(bin.count), 
+                                pip.bin=factor(names(bin.count), levels = labs),
+                                prior = "TSS 20kb")
+
+p5 <- ggplot(bin.count.tss20kb.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='dodgerblue') + 
+  theme_cowplot() + 
+  xlab('PIP (TSS 20kb prior)') + ylab('Number of SNPs') + 
+  coord_cartesian(ylim = c(0, 120)) 
+
+# cowplot::plot_grid(p1, p2, p3, p4, p5, ncol = 1)
+```
+
+```{r histogram-pip-bin-priors-2,  dev = c("png", "pdf"), fig.width=10, fig.height=10}
+
+df <- rbind(bin.count.torus.df, bin.count.unif.df)
+df$prior <- factor(df$prior, level = c("functional", "uniform"))
+p1 <- ggplot(data=df, aes(x=pip.bin, y=count, fill=prior, color=prior, alpha=prior)) +
+  geom_bar(stat="identity", position ="identity", width=0.9) +
+  scale_colour_manual(values=c("red", "dodgerblue4")) +
+  scale_fill_manual(values=c("pink", "dodgerblue")) +
+  scale_alpha_manual(values=c(0.8, 0.3)) +
+  theme_cowplot() + 
+  xlab('PIP') + ylab('Number of SNPs') +
+  coord_cartesian(ylim = c(0, 120))
+
+df <- rbind(bin.count.torus.df, bin.count.shuffled.df)
+df$prior <- factor(df$prior, level = c("functional",  "shuffled"))
+p2 <- ggplot(data=df, aes(x=pip.bin, y=count, fill=prior, color=prior, alpha=prior)) +
+  geom_bar(stat="identity", position ="identity", width=0.9) +
+  scale_colour_manual(values=c("red", "dodgerblue4")) +
+  scale_fill_manual(values=c("pink", "dodgerblue")) +
+  scale_alpha_manual(values=c(0.8, 0.3)) +
+  theme_cowplot() + 
+  xlab('PIP') + ylab('Number of SNPs')+
+  coord_cartesian(ylim = c(0, 120))
+
+df <- rbind(bin.count.torus.df, bin.count.genebody.df)
+df$prior <- factor(df$prior, level = c("functional",  "gene body"))
+p3 <- ggplot(data=df, aes(x=pip.bin, y=count, fill=prior, color=prior, alpha=prior)) +
+  geom_bar(stat="identity", position ="identity", width=0.9) +
+  scale_colour_manual(values=c("red", "dodgerblue4")) +
+  scale_fill_manual(values=c("pink", "dodgerblue")) +
+  scale_alpha_manual(values=c(0.8, 0.3)) +
+  theme_cowplot() + 
+  xlab('PIP') + ylab('Number of SNPs')+
+  coord_cartesian(ylim = c(0, 120))
+
+df <- rbind(bin.count.torus.df, bin.count.tss20kb.df)
+df$prior <- factor(df$prior, level = c("functional",  "TSS 20kb"))
+p4 <- ggplot(data=df, aes(x=pip.bin, y=count, fill=prior, color=prior, alpha=prior)) +
+  geom_bar(stat="identity", position ="identity", width=0.9) +
+  scale_colour_manual(values=c("red", "dodgerblue4")) +
+  scale_fill_manual(values=c("pink", "dodgerblue")) +
+  scale_alpha_manual(values=c(0.8, 0.3)) +
+  theme_cowplot() + 
+  xlab('PIP') + ylab('Number of SNPs')+
+  coord_cartesian(ylim = c(0, 120))
+
+cowplot::plot_grid(p1, p2, p3, p4, ncol = 1)
+```
+
+```{r histogram-pip-bin-0.5-priors,  dev = c("png", "pdf"), fig.width=10, fig.height=10}
+
+bks <- c(0.5, 0.6, 0.7, 0.8, 0.9, 1)
+labs <- c("50-60%","60-70%","70-80%","80-90%",">90%")
+
+bin.count <- table(cut(finemap_torus_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.torus.df <- data.frame(count=as.numeric(bin.count), 
+                                 pip.bin=factor(names(bin.count), levels = labs),
+                                 prior = "functional")
+
+ylim = c(0,30)
+p1 <- ggplot(bin.count.torus.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='midnightblue') + 
+  theme_cowplot() + 
+  xlab('PIP (functional prior)') + ylab('Number of SNPs') + 
+  coord_cartesian(ylim = ylim) 
+
+# uniform
+bin.count <- table(cut(finemap_unif_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.unif.df <- data.frame(count=as.numeric(bin.count), 
+                                pip.bin=factor(names(bin.count), levels = labs),
+                                prior = "uniform")
+
+p2 <- ggplot(bin.count.unif.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='dodgerblue4') + 
+  theme_cowplot() + 
+  xlab('PIP (uniform prior)') + ylab('Number of SNPs')+ 
+  coord_cartesian(ylim = ylim) 
+
+# shuffled
+bin.count <- table(cut(finemap_shuffled_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.shuffled.df <- data.frame(count=as.numeric(bin.count), 
+                                pip.bin=factor(names(bin.count), levels = labs),
+                                prior = "shuffled")
+
+p3 <- ggplot(bin.count.shuffled.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='dodgerblue') + 
+  theme_cowplot() + 
+  xlab('PIP (shuffled prior)') + ylab('Number of SNPs')+ 
+  coord_cartesian(ylim = ylim) 
+
+# gene body
+bin.count <- table(cut(finemap_genebody_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.genebody.df <- data.frame(count=as.numeric(bin.count), 
+                                pip.bin=factor(names(bin.count), levels = labs),
+                                prior = "gene body")
+
+p4 <- ggplot(bin.count.genebody.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='dodgerblue') + 
+  theme_cowplot() + 
+  xlab('PIP (gene body prior)') + ylab('Number of SNPs')+ 
+  coord_cartesian(ylim = ylim) 
+
+# TSS
+# gene body
+bin.count <- table(cut(finemap_tss20kb_prior_res$susie_pip, breaks = bks, labels = labs))
+bin.count.tss20kb.df <- data.frame(count=as.numeric(bin.count), 
+                                pip.bin=factor(names(bin.count), levels = labs),
+                                prior = "TSS 20kb")
+
+p5 <- ggplot(bin.count.tss20kb.df, aes(x=pip.bin, y = count)) + 
+  geom_bar(stat = 'identity', width=0.9, fill='dodgerblue') + 
+  theme_cowplot() + 
+  xlab('PIP (TSS 20kb prior)') + ylab('Number of SNPs') + 
+  coord_cartesian(ylim = ylim) 
+
+# cowplot::plot_grid(p1, p2, p3, p4, p5, ncol = 1)
+```
+
+```{r histogram-pip-bin-0.5-priors-2,  dev = c("png", "pdf"), fig.width=10, fig.height=10}
+
+df <- rbind(bin.count.torus.df, bin.count.unif.df)
+df$prior <- factor(df$prior, level = c("functional", "uniform"))
+
+ylim = c(0,30)
+
+p1 <- ggplot(data=df, aes(x=pip.bin, y=count, fill=prior, color=prior, alpha=prior)) +
+  geom_bar(stat="identity", position ="identity", width=0.9) +
+  scale_colour_manual(values=c("red", "dodgerblue4")) +
+  scale_fill_manual(values=c("pink", "dodgerblue")) +
+  scale_alpha_manual(values=c(0.8, 0.3)) +
+  theme_cowplot() + 
+  xlab('PIP') + ylab('Number of SNPs') +
+  coord_cartesian(ylim = ylim)
+
+df <- rbind(bin.count.torus.df, bin.count.shuffled.df)
+df$prior <- factor(df$prior, level = c("functional",  "shuffled"))
+p2 <- ggplot(data=df, aes(x=pip.bin, y=count, fill=prior, color=prior, alpha=prior)) +
+  geom_bar(stat="identity", position ="identity", width=0.9) +
+  scale_colour_manual(values=c("red", "dodgerblue4")) +
+  scale_fill_manual(values=c("pink", "dodgerblue")) +
+  scale_alpha_manual(values=c(0.8, 0.3)) +
+  theme_cowplot() + 
+  xlab('PIP') + ylab('Number of SNPs')+
+  coord_cartesian(ylim = ylim)
+
+df <- rbind(bin.count.torus.df, bin.count.genebody.df)
+df$prior <- factor(df$prior, level = c("functional",  "gene body"))
+p3 <- ggplot(data=df, aes(x=pip.bin, y=count, fill=prior, color=prior, alpha=prior)) +
+  geom_bar(stat="identity", position ="identity", width=0.9) +
+  scale_colour_manual(values=c("red", "dodgerblue4")) +
+  scale_fill_manual(values=c("pink", "dodgerblue")) +
+  scale_alpha_manual(values=c(0.8, 0.3)) +
+  theme_cowplot() + 
+  xlab('PIP') + ylab('Number of SNPs')+
+  coord_cartesian(ylim = ylim)
+
+df <- rbind(bin.count.torus.df, bin.count.tss20kb.df)
+df$prior <- factor(df$prior, level = c("functional",  "TSS 20kb"))
+p4 <- ggplot(data=df, aes(x=pip.bin, y=count, fill=prior, color=prior, alpha=prior)) +
+  geom_bar(stat="identity", position ="identity", width=0.9) +
+  scale_colour_manual(values=c("red", "dodgerblue4")) +
+  scale_fill_manual(values=c("pink", "dodgerblue")) +
+  scale_alpha_manual(values=c(0.8, 0.3)) +
+  theme_cowplot() + 
+  xlab('PIP') + ylab('Number of SNPs')+
+  coord_cartesian(ylim = ylim)
+
+cowplot::plot_grid(p1, p2, p3, p4, ncol = 1)
+```
+
+
+eCDF for PIP > 0.1
+```{r compare-pip-0.1-ecdf-priors,  dev = c("png", "pdf"), fig.width=7, fig.height=7}
+pip_cutoff <- 0.1
+
+torus_pips_filtered <- data.frame(pip =  finemap_torus_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                  prior = "functional")
+
+unif_pips_filtered <- data.frame(pip =  finemap_unif_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                 prior = "uniform")
+
+shuffled_pips_filtered <- data.frame(pip =  finemap_shuffled_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                     prior = "shuffled")
+
+genebody_pips_filtered <- data.frame(pip =  finemap_genebody_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                     prior = "gene body")
+
+tss20kb_pips_filtered <- data.frame(pip =  finemap_tss20kb_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                    prior = "TSS 20kb")
+
+df <- rbind(torus_pips_filtered, unif_pips_filtered, shuffled_pips_filtered, genebody_pips_filtered, tss20kb_pips_filtered)
+
+df$prior <- factor(df$prior, level = c("functional", "uniform", "shuffled", "gene body", "TSS 20kb"))
+
+ecdf1 <- ecdf(df$pip[df$prior == "functional"])
+ecdf2 <- ecdf(df$pip[df$prior == "uniform"])
+ecdf3 <- ecdf(df$pip[df$prior == "shuffled"])
+ecdf4 <- ecdf(df$pip[df$prior == "gene body"])
+ecdf5 <- ecdf(df$pip[df$prior == "TSS 20kb"])
+
+plot(ecdf5, verticals=TRUE, do.points=FALSE, col = "orange", main = "", 
+     xlab = "PIP [0.1,1]", ylab = "Empirical Cumulative Density", bty = "L", 
+     xlim = c(0.1,1),
+     xaxt = "n", yaxt = "n")
+axis(1, at=seq(0,1,by = 0.1),labels=seq(0,1,by = 0.1),las=1)
+axis(2, at=seq(0,1,by = 0.1),labels=seq(0,1,by = 0.1),las=1)
+plot(ecdf4, verticals=TRUE, do.points=FALSE, add=TRUE, col='blue')
+plot(ecdf3, verticals=TRUE, do.points=FALSE, add=TRUE, col='purple')
+plot(ecdf2, verticals=TRUE, do.points=FALSE, add=TRUE, col='darkgreen')
+plot(ecdf1, verticals=TRUE, do.points=FALSE, add=TRUE, col='red')
+legend("bottomright", legend = c("Functional", "Uniform", "Shuffled", "Gene body", "TSS 20kb"), 
+       lty = 1, bty = "n",
+       col = c("red", "darkgreen", "purple", "blue", "orange"))
+```
+
+eCDF of PIPs > 0.01
+```{r compare-pip-0.01-ecdf-priors,  dev = c("png", "pdf"), fig.width=7, fig.height=7}
+pip_cutoff <- 0.01
+
+torus_pips_filtered <- data.frame(pip =  finemap_torus_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                  prior = "functional")
+
+unif_pips_filtered <- data.frame(pip =  finemap_unif_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                 prior = "uniform")
+
+shuffled_pips_filtered <- data.frame(pip =  finemap_shuffled_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                     prior = "shuffled")
+
+genebody_pips_filtered <- data.frame(pip =  finemap_genebody_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                     prior = "gene body")
+
+tss20kb_pips_filtered <- data.frame(pip =  finemap_tss20kb_prior_res %>% filter(susie_pip >= pip_cutoff) %>% pull(susie_pip),
+                                    prior = "TSS 20kb")
+
+df <- rbind(torus_pips_filtered, unif_pips_filtered, shuffled_pips_filtered, genebody_pips_filtered, tss20kb_pips_filtered)
+
+df$prior <- factor(df$prior, level = c("functional", "uniform", "shuffled", "gene body", "TSS 20kb"))
+
+ecdf1 <- ecdf(df$pip[df$prior == "functional"])
+ecdf2 <- ecdf(df$pip[df$prior == "uniform"])
+ecdf3 <- ecdf(df$pip[df$prior == "shuffled"])
+ecdf4 <- ecdf(df$pip[df$prior == "gene body"])
+ecdf5 <- ecdf(df$pip[df$prior == "TSS 20kb"])
+
+plot(ecdf5, verticals=TRUE, do.points=FALSE, col = "orange", main = "", 
+     xlab = "PIP [0,1]", ylab = "Empirical Cumulative Density", bty = "L", 
+     xlim = c(pip_cutoff,1),
+     xaxt = "n", yaxt = "n")
+axis(1, at=seq(0,1,by = 0.1),labels=seq(0,1,by = 0.1),las=1)
+axis(2, at=seq(0,1,by = 0.1),labels=seq(0,1,by = 0.1),las=1)
+plot(ecdf4, verticals=TRUE, do.points=FALSE, add=TRUE, col='blue')
+plot(ecdf3, verticals=TRUE, do.points=FALSE, add=TRUE, col='purple')
+plot(ecdf2, verticals=TRUE, do.points=FALSE, add=TRUE, col='darkgreen')
+plot(ecdf1, verticals=TRUE, do.points=FALSE, add=TRUE, col='red')
+legend("bottomright", legend = c("Functional", "Uniform", "Shuffled", "Gene body", "TSS 20kb"), 
+       lty = 1, bty = "n",
+       col = c("red", "darkgreen", "purple", "blue", "orange"))
+```
+
+
+### Are any SNPs missing using functional prior vs uniform prior?
+
+```{r venn-diagram-compare-unif-functional-prior,  dev = c("png", "pdf"), fig.width=7, fig.height=5}
+unif_highPIP_snps <- unique(finemap_unif_prior_annot$snp[finemap_unif_prior_annot$susie_pip >= 0.5])
+cat(length(unif_highPIP_snps), "SNPs with PIP >= 0.5 under uniform prior. \n")
+finemap_torus_sel_res <- finemap_torus_prior_annot[match(unif_highPIP_snps, finemap_torus_prior_annot$snp),]
+cat(length(which(finemap_torus_sel_res$susie_pip >= 0.5)), "SNPs of them have PIP >= 0.5 under functional prior. \n")
+cat(length(which(finemap_torus_sel_res$susie_pip < 0.5)), "SNPs of them have PIP < 0.5 under functional prior. \n")
+
+# hist(finemap_torus_sel_res$susie_pip, main = "", xlab = "PIP under functional prior", ylab = "# SNPs")
+
+x <- list(
+  "Uniform prior\n(PIP >= 0.5)" = unique(finemap_unif_prior_annot$snp[finemap_unif_prior_annot$susie_pip >= 0.5]),
+  "Functional prior\n(PIP >= 0.5)" = unique(finemap_torus_prior_annot$snp[finemap_torus_prior_annot$susie_pip >= 0.5]))
+
+library(eulerr)
+
+plot(euler(x), quantities = TRUE)
+
+```
+
+
+
+### Top 10 SNPs that gain the most PIP from the functional prior
+
+```{r gain-pip-snps}
+if(!all.equal(finemap_torus_prior_annot$snp, finemap_unif_prior_annot$snp)){
+  stop("SNPs not match!")
+}
+if(!all.equal(finemap_torus_prior_annot$snp, finemap_shuffled_prior_annot$snp)){
+  stop("SNPs not match!")
+}
+if(!all.equal(finemap_torus_prior_annot$snp, finemap_genebody_prior_annot$snp)){
+  stop("SNPs not match!")
+}
+if(!all.equal(finemap_torus_prior_annot$snp, finemap_tss20kb_prior_annot$snp)){
+  stop("SNPs not match!")
+}
+
+finemap_torus_prior_annot <- finemap_torus_prior_annot %>% 
+  dplyr::rename(CM_shared = CM_shared_peaks_hg19.bed_d, 
+                CM_specific = CM_specific_peaks_hg19.bed_d, 
+                CM_non_DA = CM_nonDA_peaks_hg19.bed_d, 
+                non_CM = other_peaks_hg19.bed_d, 
+                eQTLs = all_eqtls_hg19.bed_d,
+                coding = Coding_UCSC.bed_d, 
+                conserved = Conserved_LindbladToh.bed_d)
+
+compare_pip_tble <- finemap_torus_prior_annot %>% 
+  dplyr::rename(functional_pip = susie_pip) %>%
+  dplyr::mutate(torus_prior = round(torus_prior, 4),
+                functional_pip = round(functional_pip, 4),
+                unif_pip = round(finemap_unif_prior_annot$susie_pip,4), 
+                shuffled_pip = round(finemap_shuffled_prior_annot$susie_pip,4), 
+                genebody_pip = round(finemap_genebody_prior_annot$susie_pip,4), 
+                tss20kb_pip = round(finemap_tss20kb_prior_annot$susie_pip,4), 
+                `functional-uniform pip` = round(functional_pip - unif_pip,4),
+                `functional-shuffled pip` = round(functional_pip - shuffled_pip,4),
+                `functional-genebody pip` = round(functional_pip - genebody_pip,4),
+                `functional-tss20kb pip` = round(functional_pip - tss20kb_pip,4)) %>%
+  dplyr::select(snp, pval, locus, torus_prior,
+                functional_pip, unif_pip, shuffled_pip, genebody_pip, tss20kb_pip,
+                `functional-uniform pip`,
+                CM_specific, CM_shared, CM_non_DA, non_CM, eQTLs, coding, conserved) %>% 
+  arrange(-`functional-uniform pip`)
+
+head(as.data.frame(compare_pip_tble), 10)
+```
+

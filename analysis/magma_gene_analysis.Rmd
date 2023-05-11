@@ -1,0 +1,60 @@
+---
+title: "MAGMA gene analysis"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+Load packages
+```{r}
+suppressMessages(library(tidyverse))
+library(readr)
+```
+
+## Prepare gene annotation files
+
+```{r setting}
+out.dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/magma/"
+dir.create(out.dir, showWarnings = F, recursive = T)
+```
+
+We use a reference genotype panel from European population (1KG). 
+```{r load-bigSNP, eval=FALSE}
+bigSNP <- bigsnpr::snp_attach(rdsfile = '/project2/xinhe/1kg/bigsnpr/EUR_variable_1kg.rds')
+```
+
+Load GWAS summary statistics of AFib and and save as text format
+```{r load-GWAS, eval=FALSE}
+data.dir <- '/project2/gca/Heart_Atlas/reorganized_data/example_data'
+gwas.sumstats <- readRDS(paste0(data.dir, '/GWAS/ebi-a-GCST006414_aFib.df.rds'))
+head(gwas.sumstats)
+
+gwas.pval <- gwas.sumstats %>% 
+  mutate(mlogp = pval) %>%
+  mutate(pval = 10^(-mlogp)) %>%
+  dplyr::select(snp, pval, chr, pos, a0, a1)
+
+readr::write_tsv(x = gwas.pval, file = file.path(out.dir, 'aFib.gwas.pval.txt'), col_names = T)
+```
+
+## MAGMA annotation
+
+Use the reference genotype panel from European population (1KG). 
+```{bash eval=FALSE}
+SNPLOC_FILE=/project2/xinhe/1kg/bigsnpr/EUR.1kg.bim
+GENELOC_FILE=/project2/xinhe/kevinluo/magma/aux_files/gene.locations/NCBI37/NCBI37.3.gene.loc
+ANNOT_PREFIX=EUR.1kg.NCBI37
+
+magma --annotate --snp-loc ${SNPLOC_FILE} --gene-loc ${GENELOC_FILE} --out ${ANNOT_PREFIX}
+```
+
+## Gene Analysis
+```{bash eval=FALSE}
+DATA=/project2/xinhe/1kg/bigsnpr/EUR.1kg
+ANNOT_PREFIX=EUR.1kg.NCBI37
+PVAL_FILE=/project2/xinhe/shared_data/aFib_gene_finemapping/magma/aFib.gwas.pval.txt
+N=1030836
+
+magma --bfile ${DATA} --gene-annot ${ANNOT_PREFIX}.genes.annot --pval ${PVAL_FILE} use=snp,pval N=${N}
+
+```

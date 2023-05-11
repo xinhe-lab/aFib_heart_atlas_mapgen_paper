@@ -1,0 +1,318 @@
+---
+title: "Heart Atlas - Combined"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Introduction
+
+10X snRNA-seq and snATAC-seq was ran on 6 regions of the heart from 3 individuals. Here we explore the clustering results from combining all donors and heart chambers for both modalities. Generally the data were good quality. We removed cells with small libraries (< 1000 UMI in RNA, < 3000 unique fragments in ATAC). We also removed doublets in ATAC-seq using ArchR's doublet removal scheme. For RNA-seq, we removed doublets using the DoubletFinder tool.
+
+### Clustering
+
+The dimensionality reduction and clustering was done outside of this notebook and the resulting objects were serialized/saved. Details as to how the data were processed are in `R/`.
+
+```{r}
+suppressMessages(library(Seurat))
+suppressMessages(library(ArchR))
+suppressMessages(library(ComplexHeatmap))
+suppressMessages(source('../R/analysis_utils.R'))
+suppressMessages(source('../R/track_plotter.R'))
+
+srna <- readRDS('../seurat/Heart_RNA_Processed_Combined_NoAtrium.rds')
+satac <- suppressMessages(loadArchRProject('../ArchR/ArchR_heart_latest_noAtrium/', showLogo = F))
+```
+
+We can visualize the six different regions:
+
+```{r umap1, fig.width=10, fig.height=5}
+palette <- setNames(brewer.pal(4, "Set1"), unique(srna$region))
+p1 <- custom_dim_plot(seurat = srna, group.by = 'region', palette = palette, legend = F, label = F, pt.size = 0.05) + ggtitle('snRNA-seq') 
+p2 <- custom_archr_plot(archr_project = satac, group.by = 'regions', palette = palette, legend = F, label = F, pt.size = 0.05, alpha = 0.3) + ggtitle('snATAC-seq')
+p1 + p2
+```
+
+
+We can visualize the clustering results with the inferred cell types. I used the following markers to define cell types: 
+
+```{r, echo = F}
+markers.df <- data.frame(marker = c('TTN/MYBPC3',"MYH7","NPPA",'RGS5/ABCC9','MYH11/TAGLN','DCN/PDGFRA','PECAM1/VWF','PLP1','CDA8/LCK','CD14/FOLR2'), CellType = c('Cardiomyocytes','Vent. CM','Atrial CM','Pericyte','Smooth Muscle','Fibroblast','Endothelial','Neuronal','Lymphoid','Myeloid'))
+knitr::kable(markers.df, caption = 'Heart cell markers')
+```
+
+
+```{r umap2, warning=FALSE, fig.width=14, fig.height=8}
+palette <- readRDS('palette.rds')
+srna$cellTypes <- Idents(srna)
+rna.umap <- custom_dim_plot(srna, group.by = "cellTypes", label = T, legend = F, palette = palette) + ggtitle('snRNA-seq') + xlim(c(-15,15)) 
+atac.umap <- custom_archr_plot(archr_project = satac, group.by = 'CellTypes', palette = palette, legend = F, label = T) + ggtitle('snATAC-seq') + xlim(c(-15,15)) 
+rna.umap + atac.umap
+```
+
+RNA label transfer results
+
+```{r umap2, warning=FALSE, fig.width=14, fig.height=8}
+palette <- readRDS('palette.rds')
+srna$cellTypes <- Idents(srna)
+rna.umap <- custom_dim_plot(srna, group.by = "cellTypes", label = T, legend = F, palette = palette) + ggtitle('snRNA-seq') + xlim(c(-15,15)) 
+atac.umap <- custom_archr_plot(archr_project = satac, group.by = 'predictedGroup_srna', palette = palette, legend = F, label = T) + ggtitle('snATAC-seq - Transferred Label') + xlim(c(-15,15)) 
+rna.umap + atac.umap
+```
+
+We recover 9 cell types in scRNA-seq and 7 in scATAC-seq. How do they compare in proportion?
+
+As expected, cardiomyocytes are the dominant cell type in both assays.
+
+```{r freq}
+donors <- unique(srna$individual)
+freq <- list()
+for(i in 1:length(donors)){
+  curr.obj <- subset(srna, individual == donors[i])
+  freq[[i]] <- table(Idents(curr.obj))/length(Idents(seurat))
+}
+freqs.unlist <- unlist(freq)
+type.freq <- data.frame(freq=as.numeric(freqs.unlist), celltype=factor(names(freqs.unlist)), type = rep(donors, each = length(freq[[1]])))
+p1 <- ggplot(type.freq, aes(x=freq, y=celltype, fill = celltype, group=type)) + geom_bar(position = "stack", stat="identity", color="black") + 
+     ggClean(rotate_axis = F) + scale_fill_manual(values = palette) + xlab("Prop. Cells") + ylab("") +
+     theme(axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank()) + 
+     LegendOff() + ggtitle('scnNA-seq')
+
+freq <- list()
+for(i in 1:length(donors)){
+  curr.obj <- subsetCells(ArchRProj = satac, cellNames = satac$cellNames[satac$individual == donors[i]])
+  freq[[i]] <- table(curr.obj$CellTypes)/length(satac$cellNames)
+}
+freqs.unlist <- unlist(freq)
+
+type.freq <- data.frame(freq=as.numeric(freqs.unlist), celltype=factor(names(freqs.unlist)), type = rep(donors, each = length(freq[[1]])))
+p2 <- ggplot(type.freq, aes(x=freq, y=celltype, fill = celltype, group=type)) + geom_bar(position = "stack", stat="identity", color="black") + 
+     ggClean(rotate_axis = F) + scale_fill_manual(values = palette) + xlab("Prop. Cells") + ylab("") +
+     theme(axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank()) + 
+     LegendOff() + ggtitle('snATAC-seq')
+
+```
+
+```{r}
+p1 + p2
+```
+
+Visualize markers
+
+```{r}
+cell.type.exp <- AverageExpression(object = srna, slot = 'data', verbose = F) # exponentiates and returns data in non-logged space
+cell.type.exp.mat <- log(1 + cell.type.exp$RNA)
+```
+
+Percent of cells expressing markers
+
+```{r}
+markers <- c("TNNT2","VWF","DCN","CD8A","CD14","PLP1","RGS5","TAGLN")
+
+counts <- srna@assays$RNA@counts
+counts <- counts[markers,] > 0
+pct.express <- c()
+srna$cellTypes <- Idents(srna)
+for(type in unique(Idents(srna))){
+    currobj <- subset(srna, cellTypes == type)
+    counts <- currobj@assays$RNA@counts
+    counts <- counts[markers,] > 0
+    pct.express <- c(pct.express, rowMeans(counts))
+}
+```
+
+mean log-normal expression
+```{r}
+cell.type.exp.mat <- cell.type.exp.mat[markers,]
+```
+
+```{r}
+pct.express.df <- data.frame('pExpressing' = unname(pct.express), 
+                             genes = factor(names(pct.express), levels = rev(markers)),
+                             celltypes = factor(rep(unique(Idents(srna)), each = length(markers)), levels = sort(levels(Idents(srna)))),
+                             mean_exp = unlist(cell.type.exp.mat, use.names = F))
+
+```
+
+```{r}
+pdf('../manuscript_figures/figure1/gene_dot_plot.pdf', width = 8, height=6)
+ggplot(pct.express.df, aes(x = celltypes, y = genes, color = mean_exp, size = pExpressing)) + ggrastr::rasterise(geom_point(), dpi=300) + ggClean(rotate_axis = T) + scale_color_gradientn(colors = c("lightblue","yellow","firebrick"))
+dev.off()
+```
+
+### CRE discovery
+
+Here we run macs2 on ATAC-seq aggregates of each cell-type to discover cell-type specific peaks. Below shows the number of peaks called in total and for each cell type. As expected, most peaks are not protein coding.
+
+```{r cre}
+peak.info <- getPeakSet(satac)
+peak.info.per <- peak.info@metadata$PeakCallSummary
+
+pal <- c("Distal" = "#60BA64", "Exonic" = "#73C6FF", "Intronic" = "#620FA3", "Promoter" = "#FFC554")
+ggplot(peak.info.per, aes(x=Group, y=Freq, fill=Var1)) + geom_bar(stat='identity') + labs(fill='') +
+  scale_fill_manual(values = pal) + ggClean(rotate_axis = T) + ylab("Number of Peaks \n (10^3)")
+```
+
+### Differential accessibility analysis
+
+#### Approach
+
+I used two approaches for differential accessibility: 
+
+* one vs all single-cell differential accessibility (Wilcoxon rank sum test)
+* one vs all pseudo-bulk differential accessibility in edgeR (as was done in Hocker et al.)
+
+In general, the one vs all single-cell method with Wilcoxon rank sum test has more consistent peaks across donors (shown below). While the edgeR method yields similar results in terms of motifs, Hocker et al. used each chamber as a sample, therefore the samples are not independent. 
+
+Because differential accessibility does not gaurantee features that are group-specific (only that they are upregulated), I came up with a procedure to get cell-type specific peaks. First, we set a threshold for the FDR and Log2FC (say 1% and 1, respectively). Then we count in how many cell-types every peak appears as differetially accessible. Finally, we only keep peaks that appear in a single cell-type at this FDR and log2FC. 
+
+```{r}
+archrPeaks <- readRDS('../ArchR/ArchR_heart_latest_noAtrium/PeakCalls/DA_markerPeaks.rds')
+pass_markers <- getMarkers(seMarker = archrPeaks, cutOff = "FDR <= 0.01 & Log2FC >= 1", returnGR = T)
+```
+
+```{r}
+union.peaks <- getPeakSet(satac)
+union.peaks.str <- GRToString(union.peaks)
+peak.count <- rep(0, length(union.peaks.str))
+peak.type <- rep(NA, length(union.peaks.str))
+
+for(p in names(pass_markers)){
+  hits <- GenomicRanges::findOverlaps(query = union.peaks, subject = pass_markers[[p]])
+  peak.count[queryHits(hits)] <- 1 + peak.count[queryHits(hits)]
+  peak.type[queryHits(hits)] <- p
+}
+
+peak.df <- data.frame(peak.name=union.peaks.str, cell.type.count=peak.count, peak.type=peak.type, stringsAsFactors = F)
+peak.df <- peak.df[peak.df$cell.type.count==1, ]
+```
+
+```{r}
+mean.mat.df <- as.matrix(SummarizedExperiment::assays(archrPeaks)[["Mean"]])
+colnames(mean.mat.df) <- archrPeaks@colData@rownames
+rowD <- rowData(archrPeaks)
+row.names(mean.mat.df) <- paste0(rowD$seqnames,':',rowD$start,'-',rowD$end)
+
+DA.mat <- mean.mat.df[peak.df$peak.name, ]
+```
+
+```{r}
+types <- c("Cardiomyocyte", "Pericyte","Fibroblast","Endothelial","Lymphoid","Myeloid","Neuronal","Smooth Muscle")
+mat.list <- list()
+splits <- c()
+for(t in types){
+  curr <- DA.mat[peak.df$peak.name[peak.df$peak.type==t],]
+  curr <- curr[order(curr[,t], decreasing = T),]
+  mat.list[[t]] <- curr
+  splits <- c(splits, rep(t,nrow(curr)))
+}
+```
+
+Having obtained cell-type specific regulatory peaks, we can plot the per-cell-type average accessibility. As we can see, the peaks are largely accessible in only one cell-type. Note that these are not-zscores, but absolute measures of accessibility.
+
+```{r, fig.height=5, fig.width=8}
+mat.df <- Reduce(rbind, mat.list)
+mat.df <- mat.df[,types]
+
+Heatmap(matrix = mat.df, cluster_rows = F, cluster_columns = F, show_row_names = F, name = "Mean Accessibility",
+        col = circlize::colorRamp2(c(0, 0.1, 0.4), c("black","purple","yellow")), 
+        column_split = factor(colnames(mat.df), levels=types),
+        row_split = factor(splits, levels=types),
+        row_title = NULL,
+        column_title = NULL,
+        row_gap = unit(1, "mm"),
+        column_gap = unit(1, "mm"))
+```
+
+We can plot the same for Z-scores to see the degree of variance for each peak.
+
+```{r}
+
+scaleTo <- 10^4
+DA.mat.scale <- log2(t(t(mean.mat.df)/colSums(mean.mat.df)) * scaleTo + 1)
+zscore.mat <- sweep(DA.mat.scale - rowMeans(DA.mat.scale), 1, matrixStats::rowSds(DA.mat.scale), `/`)
+row.names(zscore.mat) <- paste0(rowD$seqnames,':',rowD$start,'-',rowD$end)
+zscore.mat <- zscore.mat[peak.df$peak.name,]
+
+types <- c("Cardiomyocyte", "Pericyte","Fibroblast","Endothelial","Lymphoid","Myeloid","Neuronal","Smooth Muscle")
+mat.list <- list()
+for(t in types){
+  curr <- zscore.mat[peak.df$peak.name[peak.df$peak.type==t],]
+  curr <- curr[order(curr[,t], decreasing = T),]
+  mat.list[[t]] <- curr
+}
+mat.df <- Reduce(rbind, mat.list)
+mat.df <- t(mat.df[,types])
+```
+
+```{r, fig.height=4, fig.width=10}
+p_diff_peaks <- Heatmap(matrix = mat.df, 
+                        cluster_rows = F, 
+                        cluster_columns = F, 
+                        show_row_names = T, 
+                        show_column_names = F, 
+                        name = "Row Accessibility\nZ-scores",
+                        col = circlize::colorRamp2(c(-2,0,2), c("lightblue","white","firebrick")),
+                        width = 4)
+p_diff_peaks
+```
+
+
+### Motif enrichment
+
+Next we compare these two peak sets in terms of motif enrichment. Below we plot the enrichment of motifs in Vent. CM peaks from both methods using *aggregate donor* data for each cell-type. 
+
+```{r}
+archr_motifUp <- suppressMessages(peakAnnoEnrichment(seMarker = archrPeaks, 
+                                                     ArchRProj = satac, 
+                                                     peakAnnotation = "Motif", 
+                                                     cutOff = "FDR <= 0.01 & Log2FC >= 1"))
+```
+
+
+```{r}
+CURR_CELL_TYPE <- "Cardiomyocyte"
+TF.fdr.mat <- archr_motifUp@assays@data$mlog10Padj
+TF.fdr.mat <- TF.fdr.mat[,types]
+TF.fdr <- TF.fdr.mat[ ,CURR_CELL_TYPE, drop = FALSE]
+TF.fdr <- TF.fdr[order(TF.fdr[CURR_CELL_TYPE], decreasing = T),,drop=F]
+signif.TFs <- row.names(TF.fdr)[TF.fdr[,1] > 1]
+TFs <- sub('_.*', replacement = "", x = signif.TFs)
+```
+
+```{r}
+topN <- 5
+topMotifs <- c()
+for(t in colnames(TF.fdr.mat)){
+  idx <- order(TF.fdr.mat[,t], decreasing = T)[1:topN]
+  currTop <- rownames(TF.fdr.mat)[idx]
+  topMotifs <- c(topMotifs, currTop)
+}
+top.FDR.mat <- t(as.matrix(TF.fdr.mat[topMotifs,]))
+top.FDR.mat[top.FDR.mat > 100] <- 100
+```
+
+```{r fig.width=10, fig.height=6}
+motif_mat <- Heatmap(matrix = top.FDR.mat, cluster_rows = F, cluster_columns = F, 
+        col = circlize::colorRamp2(c(0,33,66,100), c("lightgrey","dodgerblue","purple","black")), border = T,
+        column_split = factor(colnames(top.FDR.mat), levels = colnames(top.FDR.mat)),
+        row_split = factor(rownames(top.FDR.mat), levels = rownames(top.FDR.mat)),
+        row_title = NULL,
+        column_title = NULL,
+        row_gap = unit(0, "mm"),
+        column_gap = unit(0, "mm"),
+        width = 5, name = "Motif Enrichment (-log10 pval)")
+motif_mat
+```
+
+```{r}
+p_comb <- p_diff_peaks + motif_mat
+draw(p_comb, main_heatmap="Motif Enrichment (-log10 pval)")
+```
+

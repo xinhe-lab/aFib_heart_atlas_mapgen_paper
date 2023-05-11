@@ -1,0 +1,453 @@
+---
+title: "Celltype and functional partition of fine-mapped AF loci"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+Partition the cell types of fine-mapped AF loci
+
+Load packages and some functions used in this analysis
+```{r load-packages, message=FALSE, warning=FALSE}
+suppressMessages(library(data.table))
+suppressMessages(library(tidyverse))
+suppressMessages(library(GenomicRanges))
+# suppressMessages(library(liftOver))
+library(ggplot2)
+library(ggrepel)
+library(mapgen)
+library(cowplot)
+```
+
+```{r settings}
+outdir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/pip_partition_res_new_finemapping"
+dir.create(outdir, showWarnings = F, recursive = T)
+
+palette <- readRDS('../notebooks/palette.rds')
+```
+
+```{r loci-LD-blocks}
+data('Euro_LD_Chunks', package='mapgen')
+colnames(LD_Blocks) <- c("chr", "start", "end", "locus")
+ldblocks.gr <- GRanges(seqnames = paste0("chr",LD_Blocks$chr),
+                       ranges = IRanges(start = LD_Blocks$start, end = LD_Blocks$end),
+                       locus=LD_Blocks$locus,
+                       location = paste0("chr",LD_Blocks$chr, ":", LD_Blocks$start, "-",LD_Blocks$end))
+```
+
+## Load data
+
+Load cell type OCR peak sets in hg38
+```{r load-OCR-peak-sets, eval=FALSE}
+## Cell type specific OCRs
+celltype.specific.OCRs.hg38 <- readRDS("/project2/gca/aselewa/heart_atlas_project/ArchR/ArchR_heart_latest_noAtrium/PeakCalls/DA_MARKERS_FDRP_1_log2FC_1.rds")
+
+## OCRs in disjoint categories (used for eQTL analysis)
+disjoint.OCRs.hg38 <- readRDS("/project2/gca/aselewa/heart_atlas_project/eQTL_enrich/OCR_disjoint_categories.grlist.rds")
+```
+
+Liftover peaks from hg38 to hg19
+```{r liftover-peaks, eval=FALSE}
+path <- system.file(package="liftOver", "extdata", "hg38ToHg19.over.chain")
+ch <- import.chain(path)
+
+celltype.specific.OCRs.hg19 <- lapply(celltype.specific.OCRs.hg38, function(x){unlist(liftOver(x, ch))})
+for(i in 1:length(celltype.specific.OCRs.hg19)){
+    seqlevelsStyle(celltype.specific.OCRs.hg19[[i]]) <- "UCSC"
+}
+
+dir.create('/project2/xinhe/shared_data/aFib_gene_finemapping/peaks', showWarnings = FALSE, recursive = TRUE)
+# saveRDS(celltype.specific.OCRs.hg19, '/project2/xinhe/shared_data/aFib_gene_finemapping/peaks/celltype_specific_OCRs_hg19.grlist.rds')
+
+disjoint.OCRs.hg19 <- lapply(disjoint.OCRs.hg38, function(x){unlist(liftOver(x, ch))})
+for(i in 1:length(disjoint.OCRs.hg19)){
+    seqlevelsStyle(disjoint.OCRs.hg19[[i]]) <- "UCSC"
+}
+
+# saveRDS(disjoint.OCRs.hg19, '/project2/xinhe/shared_data/aFib_gene_finemapping/peaks/disjoint_OCRs_hg19.grlist.rds')
+```
+
+Load cell type OCR peak sets
+```{r load-OCRs}
+celltype.specific.OCRs.hg19 <- readRDS('/project2/xinhe/shared_data/aFib_gene_finemapping/peaks/celltype_specific_OCRs_hg19.grlist.rds')
+
+disjoint.OCRs.hg19 <- readRDS('/project2/xinhe/shared_data/aFib_gene_finemapping/peaks/disjoint_OCRs_hg19.grlist.rds')
+
+names(disjoint.OCRs.hg19)[names(disjoint.OCRs.hg19) == "2-3"] <- "Shared.2or3"
+names(disjoint.OCRs.hg19)[names(disjoint.OCRs.hg19) == "4+"] <- "Shared.4plus"
+```
+
+load genomic annotations
+```{r load-genomic-annotations}
+genomic_annots_file <- "/project2/xinhe/shared_data/aFib_gene_finemapping/GWAS_gene_mapping_annots_hg19.gr.rds"
+genomic.annots <- readRDS(genomic_annots_file)
+
+all.OCRs <- genomic.annots$OCRs_hg19
+
+CM.OCRs <- disjoint.OCRs.hg19$Cardiomyocyte
+
+non.CM.OCRs <- disjoint.OCRs.hg19[c("Endothelial", "Fibroblast", "Lymphoid", "Myeloid", "Pericyte")]
+non.CM.OCRs <- unlist(as(non.CM.OCRs, "GRangesList"))
+
+shared.OCRs <- disjoint.OCRs.hg19[c("Shared.2or3", "Shared.4plus")]
+shared.OCRs <- unlist(as(shared.OCRs, "GRangesList"))
+
+all.disjoint.OCRs <- disjoint.OCRs.hg19[c("Cardiomyocyte", "Endothelial", "Fibroblast", "Lymphoid", "Myeloid", "Pericyte", "Shared.2or3", "Shared.4plus")]
+all.disjoint.OCRs <- unlist(as(all.disjoint.OCRs, "GRangesList"))
+
+non.DA.OCRs <- setdiff(all.OCRs, all.disjoint.OCRs, ignore.strand=TRUE)
+
+exon.annots <- genomic.annots$exons
+utr.annots <- genomic.annots$UTRs
+intron.annots <- genomic.annots$introns
+
+functional.annots <- list(CM.OCRs = CM.OCRs,
+                          non.CM.OCRs = non.CM.OCRs,
+                          shared.OCRs = shared.OCRs,
+                          non.DA.OCRs = non.DA.OCRs,
+                          UTRs = utr.annots,
+                          Exons = exon.annots,
+                          Introns = intron.annots)
+
+cat("annots: \n")
+names(functional.annots)
+
+functional.annots.merged <- unlist(as(functional.annots, "GRangesList"))
+
+```
+
+## Using finemapping results with functional priors 
+Load finemapping results (no Atrium, with CM non-DA)
+```{r load-finemapping-res}
+finemap_res <- readRDS("/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_torusprior_122loci.rds")
+
+finemapstats.gr <- process_finemapping_sumstats(finemap_res, 
+                                                snp = 'snp', chr = 'chr', 
+                                                pos = 'pos', pip = 'susie_pip', 
+                                                pval = 'pval', zscore = 'zscore', 
+                                                cs = 'CS', locus = 'locus',  
+                                                pip.thresh = 1e-5)
+cat(length(unique(finemapstats.gr$locus)), "finemapped loci. \n")
+```
+
+### Partition into functional categories
+```{r sum-pip-functional-categories}
+locus.list <- sort(unique(finemapstats.gr$locus))
+names(functional.annots)
+
+# PIP matrix
+# rows are finemapped loci, columns are annotation categories
+annot.order <- c("CM.OCRs", "non.CM.OCRs", "shared.OCRs", "non.DA.OCRs", "UTRs", "Exons", "Introns")
+
+annots.list <- functional.annots[annot.order]
+summary(annots.list)
+
+# Sum of PIPs in each annotation category
+sum_pip_res <- partition_pip_annots(finemapstats.gr, annots.list)
+sum.pip.mat <- sum_pip_res$sum.pips
+colnames(sum.pip.mat)[colnames(sum.pip.mat) == "others"] <- "Intergenic"
+head(sum.pip.mat)
+
+# Number of SNPs included in each annotation category
+n.snps <- sum_pip_res$n.snps
+colnames(n.snps)[colnames(n.snps) == "others"] <- "Intergenic"
+# head(n.snps)
+```
+
+Pie chart of PIP partitions across functional annotation categories along the genome
+```{r annot-pie-chart-nonDA, dev=c('png', 'pdf'), fig.width=6, fig.height=5}
+sum.pip.annots <- colSums(sum.pip.mat)
+prop.pip.annots <- sum.pip.annots/sum(sum.pip.annots)*100
+
+annot.categories <- names(prop.pip.annots)
+df <- data.frame(category = annot.categories, value = prop.pip.annots[annot.categories])
+annot.categories <- c("CM.OCRs", "non.CM.OCRs", "non.DA.OCRs", "shared.OCRs", "UTRs", "Exons", "Introns", "Intergenic")
+
+df$category <- factor(df$category, levels = annot.categories)
+colors <- c(CM.OCRs = "#b22222", non.CM.OCRs = "#8491B4FF", non.DA.OCRs = "#4DBBD5FF", shared.OCRs = "#3C5488FF",
+            UTRs = "#238b45", Exons =  "#bee6af", Introns = "#B09C85FF", Intergenic = "#aaaaaa")
+
+# Piechart
+ggplot(df, aes(x="", y=value, fill=category)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  scale_fill_manual(values = colors) +
+  theme_void() # remove background, grid, numeric labels
+
+print(round(prop.pip.annots, 2))
+```
+
+Merge non-DA OCRs into non-CM OCRs
+```{r annot-pie-chart-2, dev=c('png', 'pdf'), fig.width=6, fig.height=5}
+sum.pip.annots <- colSums(sum.pip.mat)
+prop.pip.annots <- sum.pip.annots/sum(sum.pip.annots)*100
+
+prop.pip.annots["non.CM.OCRs"] <- prop.pip.annots["non.CM.OCRs"] + prop.pip.annots["non.DA.OCRs"]
+prop.pip.annots <- prop.pip.annots[names(prop.pip.annots) != "non.DA.OCRs"]
+
+annot.categories <- names(prop.pip.annots)
+df <- data.frame(category = annot.categories, value = prop.pip.annots[annot.categories])
+annot.categories.order <- c("CM.OCRs", "non.CM.OCRs", "shared.OCRs", "UTRs", "Exons", "Introns", "Intergenic")
+
+df$category <- factor(df$category, levels = annot.categories.order)
+colors <- c(CM.OCRs = "#b22222", non.CM.OCRs = "#8491B4FF", shared.OCRs = "#3C5488FF", 
+            UTRs = "#238b45", Exons =  "#bee6af", Introns = "#B09C85FF", Intergenic = "#aaaaaa")
+
+# Piechart
+ggplot(df, aes(x="", y=value, fill=category)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  scale_fill_manual(values = colors) + 
+  theme_void() # remove background, grid, numeric labels
+
+print(round(prop.pip.annots, 2))
+
+sum(prop.pip.annots[grep("OCR", names(prop.pip.annots))])
+```
+
+Structure plot for PIP partitions across functional annotation categories at each locus
+```{r structure-plot-functional-annot, dev=c('png', 'pdf'), fig.width=10, fig.height=2.5}
+sum.pip.mat$non.CM.OCRs <- sum.pip.mat$non.CM.OCRs + sum.pip.mat$non.DA.OCRs
+sum.pip.mat$non.DA.OCRs <- NULL
+sum.pip.mat$OCRs <- rowSums(sum.pip.mat[, grep("OCRs", colnames(sum.pip.mat))])
+sum.pip.mat <- sum.pip.mat[, c("OCRs", "UTRs", "Exons", "Introns", "Intergenic")]
+
+locus.order <- rownames(sum.pip.mat)[with(sum.pip.mat, order(-OCRs, UTRs, Exons, Introns, Intergenic))]
+
+sum.pip.mat <- sum.pip.mat[locus.order,]
+prop.pip.mat <- sum.pip.mat/rowSums(sum.pip.mat)
+
+cat("Percentage of loci with OCR proportion > 0.5: \n")
+length(which(prop.pip.mat$OCRs > 0.5)) / nrow(prop.pip.mat)
+
+categories.order <- c("OCRs", "UTRs", "Exons", "Introns", "Intergenic")
+colors1 <- c(OCRs = "#E18727FF", UTRs = "#238b45", Exons =  "#bee6af", Introns = "#B09C85FF", Intergenic = "#aaaaaa")
+
+dat1 <- compile_structure_plot_data(prop.pip.mat, categories = rev(categories.order))
+structure_plot(dat1, colors = rev(colors1))
+```
+
+### Partition loci into cell types (disjoint categories)
+
+Prepare the Sum PIP and N.SNPs result table for disjoint categories
+```{r sum-pip-disjoint-categories}
+locus.list <- sort(unique(finemapstats.gr$locus))
+
+disjoint_categories <- disjoint.OCRs.hg19
+names(disjoint_categories)
+
+# Sum of PIPs in each annotation category
+sum_pip_res_cagegories <- partition_pip_regions(finemapstats.gr, disjoint_categories)
+sum.pip.cagegories <- sum_pip_res_cagegories$sum.pips
+colnames(sum.pip.cagegories) <- paste(colnames(sum.pip.cagegories), "Sum.PIP", sep = ".")
+num.snps.cagegories <- sum_pip_res_cagegories$n.snps
+colnames(num.snps.cagegories) <- paste(colnames(num.snps.cagegories), "N.SNPs", sep = ".")
+sum.pip.n.snps.mat <- cbind(round(sum.pip.cagegories, 2), num.snps.cagegories)
+ordered.colnames <- paste(rep(names(disjoint_categories), each = 2), rep(c("Sum.PIP", "N.SNPs"), length(disjoint_categories)), sep = ".")
+
+if(!all.equal(rownames(sum.pip.n.snps.mat), as.character(locus.list))){
+  stop("loci list not match!")
+}
+
+locus_locations <- ldblocks.gr$location[match(locus.list, ldblocks.gr$locus)]
+
+sum.pip.n.snps.mat <- data.frame(locus = locus.list, location = locus_locations, sum.pip.n.snps.mat[, ordered.colnames])
+
+readr::write_csv(sum.pip.n.snps.mat, file.path(outdir, 'aFib_Finemapped_loci_disjoint_categories_sum.pip_n.snps.csv'))
+
+cat("Sum PIP table saved to:", file.path(outdir, 'aFib_Finemapped_loci_disjoint_categories_sum.pip_n.snps.csv'), "\n")
+```
+
+```{r sum-pip-disjoint-OCRs-2}
+locus.list <- sort(unique(finemapstats.gr$locus))
+
+OCR.categories <- c("Cardiomyocyte", "Endothelial", "Fibroblast", "Lymphoid", "Myeloid", "Pericyte", "Shared.2or3", "Shared.4plus")
+disjoint_OCRs <- disjoint.OCRs.hg19[OCR.categories]
+names(disjoint_OCRs)
+
+# Sum of PIPs in each annotation category
+sum_pip_res2 <- partition_pip_regions(finemapstats.gr, disjoint_OCRs)
+sum.pip.mat2 <- sum_pip_res2$sum.pips
+
+sum.pip.df2 <- data.frame(locus = locus.list, sum.pip.mat2, check.names = FALSE)
+
+readr::write_csv(sum.pip.df2, file.path(outdir, 'aFib_Finemapped_loci_disjointOCRs_celltypes_sum.pip.mat.csv'))
+
+cat("Sum PIP table saved to:", file.path(outdir, 'aFib_Finemapped_loci_disjointOCRs_celltypes_sum.pip.mat.csv'), "\n")
+
+```
+
+Filter loci with a cutoff of total PIPs in OCR > 0.25, 
+compute the proportion of PIPs partitioned in each cell type category.
+```{r filter-compute-proportion-pips}
+# reorder the loci to match the previous figure
+sum.pip.df2 <- sum.pip.df2[match(locus.order, sum.pip.df2$locus), ]
+
+## select high PIP loci
+highOCR.loci <- sum.pip.df2$locus[rowSums(sum.pip.df2[,OCR.categories]) > 0.25]
+cat(length(highOCR.loci), "high OCR loci (summed OCR PIP > 0.25) \n")
+
+sum.pip.filtered.df2 <- sum.pip.df2 %>% dplyr::filter(locus %in% highOCR.loci)
+sum.pip.mat2 <- sum.pip.filtered.df2[, OCR.categories]
+
+prop.pip.mat2 <- sum.pip.mat2/rowSums(sum.pip.mat2)
+rownames(prop.pip.mat2) <- sum.pip.filtered.df2$locus
+# prop.pip.mat2 <- na.omit(prop.pip.mat2)
+
+prop.pip.mat2 <- prop.pip.mat2 %>% dplyr::rename("Shared 2-3"="Shared.2or3", "Shared 4+"="Shared.4plus")
+```
+
+Make a structure plot to show the proportion of PIPs in each cell type category.
+```{r structure-plot-disjoint-OCRs-2, dev=c('png', 'pdf'), fig.width=10, fig.height=2.5}
+OCR.categories.order <- c("Cardiomyocyte", "Endothelial", "Fibroblast", "Lymphoid", "Myeloid", "Pericyte", "Shared 2-3", "Shared 4+")
+colors2 <- c(palette, "Shared 2-3" = "royalblue", "Shared 4+" = "#003C86")
+dat2 <- compile_structure_plot_data(prop.pip.mat2, rev(OCR.categories.order))
+structure_plot(dat2, colors2[rev(OCR.categories.order)])
+```
+
+```{r prop.pip.CM-2}
+hist(prop.pip.mat2$Cardiomyocyte, xlab = "Proportion", main = "Proportion of Cardiomyocyte OCRs")
+cat(length(which(prop.pip.mat2$Cardiomyocyte >= 0.9)), "loci with Cardiomyocyte OCRs proportion > 90% \n")
+```
+
+Highlight a few loci
+
+```{r highlight-loci}
+Fibroblast.locus <- rownames(prop.pip.mat2)[which(prop.pip.mat2$Fibroblast > 0.5)]
+ldblocks.gr[ldblocks.gr$locus %in% Fibroblast.locus,]
+Fibroblast.locus.location <- ldblocks.gr[ldblocks.gr$locus %in% Fibroblast.locus,]$location
+cat("Fibroblast locus", Fibroblast.locus.location, "\n")
+
+Myeloid.locus <- rownames(prop.pip.mat2)[which(prop.pip.mat2$Myeloid > 0.5)]
+ldblocks.gr[ldblocks.gr$locus %in% Myeloid.locus,]
+Myeloid.locus.location <- ldblocks.gr[ldblocks.gr$locus %in% Myeloid.locus,]$location
+cat("Myeloid locus", Myeloid.locus.location, "\n")
+
+Lymphoid.locus <- rownames(prop.pip.mat2)[which(prop.pip.mat2$Lymphoid > 0.5)]
+ldblocks.gr[ldblocks.gr$locus %in% Lymphoid.locus,]
+Lymphoid.locus.location <- ldblocks.gr[ldblocks.gr$locus %in% Lymphoid.locus,]$location
+cat("Lymphoid locus", Lymphoid.locus.location, "\n")
+
+highlight.loci <- c(Fibroblast.locus, Myeloid.locus, Lymphoid.locus)
+```
+
+```{r structure-plot-functional-annot-highlight, dev=c('png', 'pdf'), fig.width=10, fig.height=2.5}
+dat1$highlight <- ""
+dat1$highlight[which(dat1$locus %in% highlight.loci)] <- "*"
+structure_plot(dat1, rev(colors1), highlight = TRUE)
+
+dat1$highlight[which(dat1$locus %in% highlight.loci)] <- dat1$locus[which(dat1$locus %in% highlight.loci)]
+dat1$highlight[which(duplicated(dat1$highlight))] <- ""
+structure_plot(dat1, rev(colors1), highlight = TRUE)
+```
+
+```{r structure-plot-disjoint-OCRs-highlight, dev=c('png', 'pdf'), fig.width=10, fig.height=2.5}
+dat2$highlight <- ""
+dat2$highlight[which(dat2$locus %in% highlight.loci)] <- "*"
+structure_plot(dat2, colors2[rev(OCR.categories.order)], highlight = TRUE)
+
+dat2$highlight[which(dat2$locus %in% highlight.loci)] <- dat2$locus[which(dat2$locus %in% highlight.loci)]
+dat2$highlight[which(duplicated(dat2$highlight))] <- ""
+structure_plot(dat2, colors2[rev(OCR.categories.order)], highlight = TRUE)
+```
+
+```{r check-Fibroblast-locus-77}
+finemap.locus.gr <- finemapstats.gr[finemapstats.gr$locus == 77]
+
+overlaps <- (countOverlaps(finemap.locus.gr, disjoint.OCRs.hg19$Fibroblast, ignore.strand = TRUE) > 0)
+finemap.locus.in.gr <- finemap.locus.gr[overlaps,]
+print(finemap.locus.in.gr)
+```
+
+## DEG analysis
+
+Load gene mapping results
+```{r load-gene-mapping-result}
+genemapping_res_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_mapping_result_latest_noAtrium_nonDA_newSuSiE/"
+genemapping_res <- readRDS(file.path(genemapping_res_dir, paste0("aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds")))
+genemapping_res$fractional_PIP <- genemapping_res$pip * genemapping_res$frac_pip
+```
+
+Get locus level gene PIP
+```{r}
+# For each locus - gene pair, sum over the fractional PIPs for SNPs in the locus and linked to the gene
+locus.gene.pip.df <- genemapping_res %>%
+  dplyr::group_by(locus, gene_name) %>%
+  dplyr::mutate(locus_gene_pip = sum(pip * frac_pip)) %>% dplyr::ungroup() %>% 
+  dplyr::select(locus, gene_name, gene_pip, locus_gene_pip) %>%
+  dplyr::distinct(locus, gene_name, .keep_all=TRUE)
+```
+
+Load DEG result
+```{r}
+DEGs.res <- readRDS("/project2/gca/aselewa/heart_atlas_project/seurat/diff_expr_markers.df.rds")
+```
+
+Enrichment in CM
+
+We do an enrichment test: compare the proportion of CM-DEGs in these genes vs. control genes. 
+We choose low PIP genes in the same loci as control genes.
+
+```{r}
+CM.loci <- rownames(prop.pip.mat2)[which(prop.pip.mat2$Cardiomyocyte >= 0.5)]
+cat(length(CM.loci), "loci with CM OCRs proportion >= 50% \n")
+
+CM.locus.gene.pip.df <- locus.gene.pip.df %>% dplyr::filter(as.character(locus) %in% CM.loci)
+
+# select high PIP genes in CM specific loci
+CM.highPIP.gene.pip.df <- CM.locus.gene.pip.df %>% dplyr::filter(locus_gene_pip >= 0.5)
+length(unique(CM.highPIP.gene.pip.df$locus))
+
+CM.highPIP.genes <- CM.locus.gene.pip.df %>% 
+  dplyr::filter(locus_gene_pip >= 0.5) %>% 
+  pull(gene_name) %>% unique()
+
+cat(length(CM.highPIP.genes), "high PIP (PIP >= 0.5) genes in CM high PIP loci. \n")
+
+# select low PIP genes in CM specific loci
+CM.lowPIP.gene.pip.df <- CM.locus.gene.pip.df %>% dplyr::filter(locus_gene_pip < 0.1)
+length(unique(CM.lowPIP.gene.pip.df$locus))
+
+CM.lowPIP.genes <- CM.locus.gene.pip.df %>% 
+  dplyr::filter(locus_gene_pip < 0.1) %>% 
+  pull(gene_name) %>% unique()
+
+cat(length(CM.lowPIP.genes), "low PIP genes (PIP < 0.1) in CM high PIP loci. \n")
+```
+
+```{r}
+CM.DEGs.res <- DEGs.res %>% filter(cluster == "Cardiomyocyte", p_val_adj < 0.05, avg_logFC > 0)
+CM.DEGs <- unique(CM.DEGs.res$gene)
+
+CM.highPIP.DEGs <- intersect(CM.DEGs, CM.highPIP.genes)
+CM.highPIP.DEGs.prop <- length(CM.highPIP.DEGs)/length(CM.highPIP.genes)
+cat(sprintf("%d out of %d (%.1f %%) high PIP genes in CM loci are also DEGs in CM. \n",
+            length(CM.highPIP.DEGs), 
+            length(CM.highPIP.genes),
+            100*CM.highPIP.DEGs.prop))
+
+CM.lowPIP.DEGs <- intersect(CM.DEGs, CM.lowPIP.genes)
+CM.lowPIP.DEGs.prop <- length(CM.lowPIP.DEGs)/length(CM.lowPIP.genes)
+cat(sprintf("%d out of %d (%.1f %%) low PIP genes in CM loci are also DEGs in CM. \n",
+            length(CM.lowPIP.DEGs), 
+            length(CM.lowPIP.genes),
+            100*CM.lowPIP.DEGs.prop))
+
+CM.fold.enrichment <- CM.highPIP.DEGs.prop/CM.lowPIP.DEGs.prop
+cat("Fold enrichment:", CM.fold.enrichment, "\n")
+```
+
+```{r prop-degs-barplot, dev=c('png', 'pdf'), fig.height=5, fig.width=4.5}
+df <- data.frame(group = c("High PIP genes\n(Gene PIP >= 0.5)", 
+                           "Low PIP genes\n(Gene PIP < 0.1)"),
+                 prop = c(CM.highPIP.DEGs.prop, 
+                          CM.lowPIP.DEGs.prop))
+
+ggplot(data=df, aes(x=group, y=prop*100, fill=group)) +
+  geom_bar(stat="identity", width=0.6) + 
+  # coord_flip() + 
+  scale_fill_brewer(palette="Paired", direction=-1)+
+  labs(x = paste(length(CM.locus), "loci with CM OCR proportion >= 50%"), y = "CM-DEG %") + 
+  theme_cowplot() + theme(legend.position = "none") +
+  geom_text(aes(label = paste(round(prop*100, 2), "%")), vjust = -0.2)
+```

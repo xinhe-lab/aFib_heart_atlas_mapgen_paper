@@ -1,0 +1,680 @@
+---
+title: "Evaluate finemapping results for variants reported in van Ouwerkerk et al., Circ Res 2020"
+output:
+  workflowr::wflow_html:
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r knitr-opts, include=FALSE}
+knitr::opts_chunk$set(fig.align = "center")
+```
+
+Load packages and some functions used in this analysis
+```{r load-packages, message=FALSE, warning=FALSE}
+suppressMessages(library(data.table))
+suppressMessages(library(tidyverse))
+suppressMessages(library(GenomicRanges))
+suppressMessages(library(AnnotationDbi)) # match gene ID to gene symbol
+suppressMessages(library(org.Hs.eg.db)) # match gene ID to gene symbol
+suppressMessages(library(GenomicInteractions)) # visualize HiC plots
+suppressMessages(library(rtracklayer)) # loading bigwigs/bed files
+suppressMessages(library(bigsnpr)) # loading genotype data from 1000Genomes for LD calculation
+suppressMessages(library(Gviz)) # make track plots
+library(readxl)
+library(mapgen)
+library(cowplot)
+```
+
+```{r}
+get_elements_overlap_snps <- function(snp.gr, annotations) {
+  for (f in annotations) {
+    name <- paste0(basename(f), "_d")
+    curr <- rtracklayer::import(f, format = "bed")
+    seqlevelsStyle(curr) <- "NCBI"
+    curr <- GenomicRanges::reduce(curr)
+    overlap.df <- plyranges::join_overlap_inner(curr, snp.gr) %>%
+      as_tibble() %>% mutate(enhancer = paste0('chr',seqnames, ':', start, '-', end)) %>%
+      dplyr::select(snp, enhancer)
+    colnames(overlap.df) <- c("snp", sub('.bed','',basename(annotations)))
+  }
+  return(overlap.df)
+}
+```
+
+Load finemapping results
+```{r}
+data.dir <- '/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/'
+finemap_res <- readRDS(file.path(data.dir, 'AF_finemapping_result_torusprior_122loci.rds'))
+finemap_unifprior_res <- readRDS(file.path(data.dir, 'AF_finemapping_result_unifprior_122loci.rds'))
+```
+
+## Evaluate finemapping PIPs for variants with allele-specific differential activity
+
+Load Supplemental Table V
+```{r}
+vanOuwerkerk_table5 <- read_excel('/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_CircRes2020/vanOuwerkerk_CircRes2020_tables.xlsx', sheet = "Table V", skip = 1)
+```
+
+Functional prior
+```{r vanOuwerkerk2020-functional-pip-histogram, dev = c("png", "pdf"), fig.width=7, fig.height=4.5}
+in_finemap_res <- which(vanOuwerkerk_table5$SNP %in% finemap_res$snp)
+sprintf('%d out of %d SNPs in our AF finemapping result. ', length(in_finemap_res), length(vanOuwerkerk_table5$SNP))
+
+m <- match(vanOuwerkerk_table5$SNP, finemap_res$snp)
+vanOuwerkerk_table5_finemap_res <- cbind(vanOuwerkerk_SNP = vanOuwerkerk_table5$SNP, finemap_res[m, ])
+vanOuwerkerk_table5_finemap_res <- na.omit(vanOuwerkerk_table5_finemap_res)
+
+ggplot(vanOuwerkerk_table5_finemap_res, aes(x=susie_pip)) + 
+  geom_histogram( binwidth=0.05, fill="darkgray", color="darkgray") +
+  coord_cartesian(xlim=c(0,1)) +
+  xlab("PIP (functional prior)") +
+  ggtitle("Variants with allele-specific differential activity\n(van Ouwerkerk et al. 2020)") +
+  theme_cowplot()
+
+sprintf('%d SNPs in our AF finemapping credible sets. ', length(which(vanOuwerkerk_table5_finemap_res$CS>0)))
+
+round(vanOuwerkerk_table5_finemap_res$susie_pip, 2)
+```
+
+Uniform prior
+```{r vanOuwerkerk2020-unif-pip-histogram, dev = c("png", "pdf"), fig.width=7, fig.height=4.5}
+in_finemap_res <- which(vanOuwerkerk_table5$SNP %in% finemap_unifprior_res$snp)
+sprintf('%d out of %d SNPs in our AF finemapping (uniform prior) result. ', length(in_finemap_res), length(vanOuwerkerk_table5$SNP))
+
+m <- match(vanOuwerkerk_table5$SNP, finemap_unifprior_res$snp)
+vanOuwerkerk_table5_finemap_res <- cbind(vanOuwerkerk_SNP = vanOuwerkerk_table5$SNP, finemap_unifprior_res[m, ])
+vanOuwerkerk_table5_finemap_res <- na.omit(vanOuwerkerk_table5_finemap_res)
+
+ggplot(vanOuwerkerk_table5_finemap_res, aes(x=susie_pip)) + 
+  geom_histogram( binwidth=0.05, fill="darkgray", color="darkgray") +
+  xlab("PIP (uniform prior)") + 
+  coord_cartesian(xlim=c(0,1)) +
+  ggtitle("Variants with allele-specific differential activity\n(van Ouwerkerk et al. 2020)") +
+  theme_cowplot()
+
+sprintf('%d SNPs in our AF finemapping (uniform prior) credible sets. ', length(which(vanOuwerkerk_table5_finemap_res$CS>0)))
+```
+
+## Evaluate the PIPs for SNPs reported in Supplemental Table VII (Target genes of variant enhancers)
+```{r}
+vanOuwerkerk_table7 <- read_excel('/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_CircRes2020/vanOuwerkerk_CircRes2020_tables.xlsx', sheet = "Table VII", skip = 1)
+```
+
+Functional prior
+```{r vanOuwerkerk2020-supp-table7-functional-pip-histogram,  dev = c("png", "pdf"), fig.width=7, fig.height=4.5}
+vanOuwerkerk_table7_SNPs <- unique(vanOuwerkerk_table7$SNP)
+in_finemap_res <- which(vanOuwerkerk_table7_SNPs %in% finemap_res$snp)
+sprintf('%d out of %d SNPs in our AF finemapping result. ', 
+        length(in_finemap_res), length(vanOuwerkerk_table7_SNPs))
+
+m <- match(vanOuwerkerk_table7_SNPs, finemap_res$snp)
+vanOuwerkerk_table7_finemap_res <- cbind(vanOuwerkerk_SNP = vanOuwerkerk_table7_SNPs, finemap_res[m, ])
+vanOuwerkerk_table7_finemap_res <- na.omit(vanOuwerkerk_table7_finemap_res)
+
+ggplot(vanOuwerkerk_table7_finemap_res, aes(x=susie_pip)) + 
+  geom_histogram(binwidth=0.05, fill="darkgray", color="darkgray") +
+  xlab("PIP (functional prior)") + 
+  coord_cartesian(xlim=c(0,1)) +
+  ggtitle("Variants lined to target genes through PC-HiC \n(van Ouwerkerk et al. 2020)") +
+  theme_cowplot()
+
+cat('PIPs:', round(vanOuwerkerk_table7_finemap_res$susie_pip,2), '\n')
+cat('max PIP:', max(vanOuwerkerk_table7_finemap_res$susie_pip), '\n')
+sprintf('%d SNPs in our AF finemapping credible sets. ', length(which(vanOuwerkerk_table7_finemap_res$CS>0)))
+```
+
+Uniform prior
+```{r vanOuwerkerk2020-supp-table7-unif-pip-histogram,  dev = c("png", "pdf"), fig.width=7, fig.height=4.5}
+vanOuwerkerk_table7_SNPs <- unique(vanOuwerkerk_table7$SNP)
+in_finemap_res <- which(vanOuwerkerk_table7_SNPs %in% finemap_unifprior_res$snp)
+sprintf('%d out of %d SNPs in our AF finemapping result. ', length(in_finemap_res), length(vanOuwerkerk_table7_SNPs))
+
+m <- match(vanOuwerkerk_table7_SNPs, finemap_unifprior_res$snp)
+vanOuwerkerk_table7_finemap_res <- cbind(vanOuwerkerk_SNP = vanOuwerkerk_table7_SNPs, finemap_unifprior_res[m, ])
+vanOuwerkerk_table7_finemap_res <- na.omit(vanOuwerkerk_table7_finemap_res)
+
+ggplot(vanOuwerkerk_table7_finemap_res, aes(x=susie_pip)) + 
+  geom_histogram(binwidth=0.05, fill="darkgray", color="darkgray") +
+  xlab("PIP (uniform prior)") + 
+  coord_cartesian(xlim=c(0,1)) +
+  ggtitle("Variants lined to target genes through PC-HiC \n(van Ouwerkerk et al. 2020)") +
+  theme_cowplot()
+
+cat('PIPs:', round(vanOuwerkerk_table7_finemap_res$susie_pip,2), '\n')
+cat('max PIP:', max(vanOuwerkerk_table7_finemap_res$susie_pip), '\n')
+sprintf('%d SNPs in our AF finemapping credible sets. ', length(which(vanOuwerkerk_table7_finemap_res$CS>0)))
+```
+
+## Trackplot for KCNN3 region
+
+Load finemapping results (use new finemapping result with functional prior)
+
+```{r}
+data_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping"
+genomic_annots_file <- file.path(data_dir, "GWAS_gene_mapping_annots_hg19.gr.rds")
+ABC_file <- file.path(data_dir, "/ABC/Nasser2021/tissues/heart_ventricle-ENCODE_ABC.tsv.gz")
+H3K27ac_file <- "/project2/xinhe/shared_data/aFib_gene_finemapping/trackplots/H3K27ac_heart_concat.bed"
+DHS_file <- "/project2/xinhe/shared_data/aFib_gene_finemapping/trackplots/FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.bed.gz"
+
+finemapping_file <- paste0(data_dir, "/pipeline/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_torusprior_122loci.rds")
+```
+
+```{r load-finemapping-res}
+finemapstats <- readRDS(finemapping_file) %>% dplyr::rename(pip = susie_pip)
+finemapstats.gr <- process_finemapping_sumstats(finemapstats, 
+                                                snp = 'snp', chr = 'chr', 
+                                                pos = 'pos', pip = 'pip', 
+                                                pval = 'pval', zscore = 'zscore', 
+                                                cs = 'CS', locus = 'locus',  
+                                                pip.thresh = 0)
+```
+
+Load annotations
+```{r load-gene-annot, message=FALSE, warning=FALSE}
+genomic.annots <- readRDS(file.path(data_dir, "GWAS_gene_mapping_annots_hg19.gr.rds"))
+
+gene.annots <- genomic.annots$genes
+
+gene.locations <- as.data.frame(gene.annots)[, c("seqnames", "start", "end", "gene_name", "strand")]
+gene.locations <- gene.locations %>% dplyr::rename(chr = seqnames) %>% mutate(tss = start(resize(gene.annots, width = 1)))
+
+# PC-HiC
+pcHiC.gr <- genomic.annots$HiC
+pcHiC.gr <- pcHiC.gr[pcHiC.gr$gene_name %in% gene.annots$gene_name,] # restrict to protein coding genes
+
+# ABC
+ABC.gr  <- process_ABC(fread(ABC_file), ABC.thresh = 0.015, full.element = TRUE, flank = 0)
+ABC.gr <- ABC.gr[ABC.gr$gene_name %in% gene.annots$gene_name, ] # restrict to protein coding genes
+ABC.gr$promoter_chr <- seqnames(ABC.gr)
+ABC.gr$promoter_start <- ABC.gr$TargetGeneTSS
+ABC.gr$promoter_end <- ABC.gr$TargetGeneTSS
+ABC.gr$score <- ABC.gr$ABC.Score * 100
+
+# H3K27ac
+H3K27ac_peaks <- rtracklayer::import(H3K27ac_file)
+
+# Fetal DHS
+DHS_peaks <- rtracklayer::import(DHS_file)
+```
+
+Load gene mapping results
+```{r load-gene-mapping-result}
+genemapping_res_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_mapping_result_latest_noAtrium_nonDA_newSuSiE/"
+
+genemapping_res <- readRDS(file.path(genemapping_res_dir, paste0("aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds")))
+genemapping_res$fractional_PIP <- genemapping_res$pip * genemapping_res$frac_pip
+
+m <- match(genemapping_res$snp, finemapstats$snp)
+genemapping_res$pval <- finemapstats$pval[m]
+genemapping_res$zscore <- finemapstats$zscore[m]
+```
+
+SNP view (fractional PIP > 0.02)
+```{r snp-view}
+high.conf.snp.df <- fread(file.path(genemapping_res_dir, 'aFib_Finemapped_SNPView_fractionalPIP_0.02.csv'))
+high.conf.snp.df <- high.conf.snp.df %>% dplyr::rename(fractional_PIP = `Fractional PIP`)
+```
+
+LD Block view
+```{r block-view}
+block.view.df <- fread(file.path(genemapping_res_dir, 'aFib_Finemapped_LDBlockView_Nielsen_V2.csv'))
+```
+
+```{r prepare-trackplot-data, message=FALSE, warning=FALSE}
+# Load the txdb object of the gene annotations
+txdb <- AnnotationDbi::loadDb("/project2/xinhe/kevinluo/gene-level-finemapping/annot/gene_annotations/gencode.v19.annotation.gtf.sqlite")
+big.snp <- bigsnpr::snp_attach('/project2/xinhe/1kg/bigsnpr/EUR_variable_1kg.rds')
+
+atac_data.dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/trackplots/"
+atac_data_files <- c(file.path(atac_data.dir, "Hg19_Cardiomyocyte-TileSize-500-normMethod-ReadsInTSS-ArchR.bw.bedGraph"),
+                     file.path(atac_data.dir, "Hg19_Endothelial-TileSize-500-normMethod-ReadsInTSS-ArchR.bw.bedGraph"),
+                     file.path(atac_data.dir, "Hg19_Fibroblast-TileSize-500-normMethod-ReadsInTSS-ArchR.bw.bedGraph"))
+
+atac_data <- lapply(atac_data_files, function(x){rtracklayer::import(x)})
+names(atac_data) <- c("CM", "Endo", "Fibro")
+
+peaks <- list("H3K27ac" = H3K27ac_peaks, "Fetal DHS" = DHS_peaks)
+HiC_loops <- list("PC-HiC" = pcHiC.gr, "ABC" = ABC.gr)
+```
+
+Gene mapping result of KCNN3
+```{r KCNN3-info}
+genes_of_interest <- c("KCNN3")
+(genes.df <- gene.locations %>% filter(gene_name %in% genes_of_interest))
+
+genemapping_res %>% dplyr::filter(fractional_PIP > 0.02) %>% 
+  dplyr::filter(gene_name %in% genes_of_interest) %>%
+  dplyr::select(c(1:3,6:16)) %>% 
+  arrange(-fractional_PIP) %>% as.data.frame()
+
+high.conf.snp.df  %>% dplyr::filter(`Gene Linked` %in% genes_of_interest) %>%
+  dplyr::select(c(1:3,6:19)) %>% 
+  arrange(-fractional_PIP) %>% as.data.frame()
+```
+
+Trackplot around KCNN3 gene
+
+Highlighted SNPs: 
+
+ * The lines in gray highlight SNPs (rs12754189, rs36088503, and rs10908445) 
+reported by van Ouwerkerk et al., Circ Res 2020 in Supplemental Table VII. 
+(rs34292822 is not in our finemapping result);
+
+ * The lines in pink highlight the two SNPs (rs11264280, rs4999127) with 
+high fractional PIP and linked to KCNN3 through PC-HiC links in our result.  
+
+```{r KCNN3-trackplot,  dev = c("png", "pdf"), fig.width=12, fig.height=8, warning=FALSE}
+region <- mapgen:::get_gene_region(genemapping_res, "KCNN3", ext = 10000)
+start(region) <- 154659930
+end(region) <- 154870000
+
+vanOuwerkerk_CircRes2020_snps <- c("rs34292822", "rs12754189", "rs36088503", "rs10908445")
+vanOuwerkerk_CircRes2020_snps %in% finemapstats.gr$snp
+
+snps_of_interest <- c("rs4999127", "rs11264280", vanOuwerkerk_CircRes2020_snps)
+snps_colors <- c(rep("pink",2), rep("gray",4))
+
+finemapping_annot_trackplot(finemapstats.gr, 
+                            region, 
+                            gene.annots, 
+                            bigSNP = big.snp,
+                            genome = "hg19", 
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data, 
+                            data_colors = c("red", "green", "purple"), 
+                            data_ylim = c(0,0.8),
+                            peaks = peaks, 
+                            HiC_loops = HiC_loops,
+                            color_pip_by = "cs", 
+                            filter_HiCloops_genes = "KCNN3",
+                            highlight_snps = snps_of_interest,
+                            highlight_colors = snps_colors,
+                            verbose = FALSE)
+```
+
+```{r KCNN3-trackplot-2, fig.width=12, fig.height=8, eval=FALSE, warning=FALSE}
+# Zoom out view
+start(region) <- 154494500
+end(region) <- 154937700
+
+finemapping_annot_trackplot(finemapstats.gr, 
+                            region, 
+                            gene.annots, 
+                            bigSNP = big.snp,
+                            genome = "hg19", 
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data, 
+                            data_colors = c("red", "green", "purple"), 
+                            data_ylim = c(0,0.8),
+                            peaks = peaks, 
+                            HiC_loops = HiC_loops,
+                            filter_HiCloops_genes = c("KCNN3", "CHRNB2", "ADAR", "PBXIP1", "UBE2Q1"),
+                            highlight_snps = snps_of_interest,
+                            highlight_colors = snps_colors,
+                            verbose = TRUE)
+```
+
+Mapgen result for high PIP SNPs: rs4999127
+```{r}
+genemapping_res[genemapping_res$snp == "rs4999127", ] %>% as.data.frame()
+```
+
+Mapgen result for high PIP SNPs: rs11264280
+```{r}
+genemapping_res[genemapping_res$snp == "rs11264280", ] %>% as.data.frame()
+```
+
+The r2 between rs4999127 and rs11264280 is 0.0057
+```{r}
+finemapstats <- as.data.frame(finemapstats.gr)
+curr_sumstats <- finemapstats %>% dplyr::filter(snp %in% c("rs4999127", "rs11264280"))
+r2 <- mapgen:::get_LD_bigSNP(curr_sumstats, big.snp) %>% pull(r2) %>% min()
+cat("r2 between rs4999127 and rs11264280 =", r2)
+```
+
+rs12754189, rs36088503, and rs10908445 reported by van Ouwerkerk et al., Circ Res 2020 all have PIPs close to 0.
+```{r}
+finemapstats[finemapstats$snp %in% vanOuwerkerk_CircRes2020_snps, ] %>% mutate(pip = round(pip, 5))
+```
+
+We can see the SNPs reported by van Ouwerkerk et al., Circ Res 2020 
+(highlighted in gray) have PIPs close to 0. 
+
+The SNPs in Table S5 and S7 are unlikely to be causal SNPs. 
+
+In contrast, the two high PIP SNPs found by our study (highlighted in pink) 
+both are linked to KCNN3 promoter through PC-HiC.
+
+## Examine our finemapping result for the 12 loci studied in van Ouwerkerk et al., Circ Res 2020
+
+Load Supplemental Table II
+```{r}
+vanOuwerkerk_table2 <- read_excel('/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_CircRes2020/vanOuwerkerk_CircRes2020_tables.xlsx', sheet = "Table II", skip = 1)
+
+vanOuwerkerk_table2 <- vanOuwerkerk_table2 %>% 
+  dplyr::rename(region = `Chromosome (hg19)`, sentinel_snp = `sentinel variant`) %>% 
+  dplyr::mutate(region = gsub(",", "", region)) %>%
+  separate(region, c("chr", "region"), sep = ":") %>%
+  separate(region, c("start", "end"), sep = "-") 
+
+vanOuwerkerk_table2.gr <- makeGRangesFromDataFrame(vanOuwerkerk_table2, keep.extra.columns = TRUE)
+length(unique(vanOuwerkerk_table2.gr$sentinel_snp))
+```
+
+```{r}
+finemap_highPIP_snps.gr <- finemapstats.gr[finemapstats.gr$pip >= 0.5]
+cat(length(finemap_highPIP_snps.gr), "SNPs with PIP >= 0.5 \n")
+
+candidate_loci.gr <- vanOuwerkerk_table2.gr[,c("sentinel_snp", "BAC")]
+candidate_loci.gr$locus <- as.integer(factor(candidate_loci.gr$sentinel_snp, levels = unique(candidate_loci.gr$sentinel_snp)))
+overlaps <- findOverlaps(finemap_highPIP_snps.gr, candidate_loci.gr, type = "any")
+candidate_loci.gr$high_pip_snp[subjectHits(overlaps)] <- finemap_highPIP_snps.gr$snp[queryHits(overlaps)]
+candidate_loci.gr$pval[subjectHits(overlaps)] <- finemap_highPIP_snps.gr$pval[queryHits(overlaps)]
+candidate_loci.gr$pip[subjectHits(overlaps)] <- finemap_highPIP_snps.gr$pip[queryHits(overlaps)]
+candidate_loci.gr$cs[subjectHits(overlaps)] <- finemap_highPIP_snps.gr$cs[queryHits(overlaps)]
+```
+
+Load results allele-specific STARR-seq (Supplemental Table IV)
+```{r}
+vanOuwerkerk_table4 <- read_excel('/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_CircRes2020/vanOuwerkerk_CircRes2020_tables.xlsx', sheet = "Table IV", skip = 1)
+
+cat("SNPs with allele-specific STARR-seq results: \n")
+vanOuwerkerk_table4[which(vanOuwerkerk_table4$SNP %in% candidate_loci.gr$high_pip_snp), ]
+
+m <- match(candidate_loci.gr$high_pip_snp, vanOuwerkerk_table4$SNP)
+candidate_loci.gr$high_pip_snp_AS_pvalue <- NA
+candidate_loci.gr$high_pip_snp_AS_pvalue[which(!is.na(m))] <- vanOuwerkerk_table4$`p-value (Z-test)`[na.omit(m)]
+```
+
+Load 24 AS variants in Supplemental Table V
+```{r}
+vanOuwerkerk_table5 <- read_excel('/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_CircRes2020/vanOuwerkerk_CircRes2020_tables.xlsx', 
+                                  sheet = "Table V", skip = 1)
+
+cat("SNPs with allele-specific differential activity: \n")
+vanOuwerkerk_table5[which(vanOuwerkerk_table5$SNP %in% candidate_loci.gr$high_pip_snp), ]
+
+m <- match(vanOuwerkerk_table5$SNP, big.snp$map$marker.ID)
+vanOuwerkerk_table5 <- cbind(vanOuwerkerk_table5, chr = big.snp$map[m, ]$chromosome, pos = big.snp$map[m, ]$physical.pos)
+AS_variants.df <- vanOuwerkerk_table5 %>% 
+  dplyr::rename(AS_SNP = SNP, AS_p_value = "p-value") %>%
+  dplyr::mutate(chr_pos = paste0(chr, ":", pos)) %>% 
+  dplyr::select(AS_SNP, chr, pos, chr_pos, AS_p_value)
+
+AS_variants.gr <- makeGRangesFromDataFrame(AS_variants.df, start.field = "pos", end.field = "pos", keep.extra.columns = TRUE)
+seqlevelsStyle(AS_variants.gr) <- "UCSC"
+
+candidate_loci_24snps.gr <- plyranges::join_overlap_left(candidate_loci.gr, AS_variants.gr)
+
+candidate_loci_24snps.df <- as.data.frame(candidate_loci_24snps.gr) %>% 
+  dplyr::rename(chr = seqnames) %>% 
+  dplyr::select(locus, sentinel_snp, BAC, chr, start, end, high_pip_snp, pval, pip, cs, high_pip_snp_AS_pvalue, AS_SNP, chr_pos, AS_p_value)
+
+candidate_loci_24snps.df$IS_AS <- (candidate_loci_24snps.df$high_pip_snp %in% candidate_loci_24snps.gr$AS_SNP) & (!is.na(candidate_loci_24snps.df$high_pip_snp))
+
+m <- match(candidate_loci_24snps.df$AS_SNP, finemapstats.gr$snp)
+candidate_loci_24snps.df$AS_SNP_PIP <- round(finemapstats.gr$pip[m], 4)
+
+```
+
+```{r}
+write.csv(candidate_loci_24snps.df,
+          "/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_CircRes2020/candidate_loci_24AS_SNPs.csv")
+```
+
+PIPs for the 24 variants
+```{r}
+candidate_loci_highpip_snps.df <- candidate_loci_24snps.df %>% 
+  group_by(locus) %>%
+  mutate(AS_SNP_PIP = paste0(AS_SNP, ":",round(AS_SNP_PIP, 2))) %>% 
+  mutate(AS_SNPs = paste(unique(na.omit(AS_SNP_PIP)), collapse = ","))
+
+candidate_loci_highpip_snps.df <- candidate_loci_highpip_snps.df %>% distinct(locus, sentinel_snp, high_pip_snp, pval, pip, cs, high_pip_snp_AS_pvalue, IS_AS, AS_SNPs)
+candidate_loci_highpip_snps.df <- candidate_loci_highpip_snps.df[-c(3,5),]
+```
+
+```{r}
+write.csv(candidate_loci_highpip_snps.df,
+          "/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_CircRes2020/candidate_loci_highPIP_SNPs.csv")
+```
+
+```{r}
+genemapping.dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_mapping_result_latest_noAtrium_nonDA_newSuSiE/"
+
+genemapping.res <- readRDS(file.path(genemapping.dir, paste0("aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds")))
+
+snp_list <- union(na.omit(candidate_loci_highpip_snps.df$high_pip_snp), vanOuwerkerk_table5$SNP)
+
+selected.snps.df <- genemapping.res %>% filter(snp %in% snp_list) %>% 
+  mutate(fractional_PIP = pip * frac_pip) %>%
+  left_join(., finemapstats[, c("snp", "pval", "zscore")], by = "snp") 
+```
+
+Add annotations
+```{r}
+seqlevelsStyle(finemapstats.gr) <- "NCBI"
+files <- c('/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/hg19_mapped/H3K27ac_heart_concat.bed', 
+           '/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.bed.gz', 
+           '/project2/gca/aselewa/heart_atlas_project/ENCODE/FGT_ChIP_lifted_from_mm10.bed')
+annotated.snps <- lapply(files, function(x){get_elements_overlap_snps(snp.gr = finemapstats.gr[finemapstats.gr$snp %in% snp_list], annotations = x)})
+```
+
+```{r, message=FALSE, warning=FALSE}
+for(i in 1:length(annotated.snps)){
+    selected.snps.df <- left_join(selected.snps.df, annotated.snps[[i]], by = 'snp')
+}
+```
+
+
+Add GTEx v8 eQTL data
+```{r, message=FALSE, warning=FALSE}
+eqtls.gr.hg19 <- readRDS('/project2/gca/aselewa/heart_atlas_project/misc/V8_Signif_eQTLs_lifted_hg19.rds')
+eqtls.gr.hg19.df <- eqtls.gr.hg19 %>% 
+  as_tibble() %>% 
+  mutate(varID = paste0(seqnames,'_',start)) %>% 
+  filter(!is.na(Symbol)) %>%
+  dplyr::select(varID, Symbol) %>% 
+  dplyr::rename(eQTL_Symbol=Symbol) %>%
+  group_by(varID) %>% 
+  summarise(eQTL_Symbols=paste0(eQTL_Symbol, collapse=';'))
+
+selected.snps.df <- selected.snps.df %>% mutate(varID = paste0(chr,'_',pos)) %>% left_join(., eqtls.gr.hg19.df, by = "varID") %>% dplyr::select(-varID)
+```
+
+Add TF disruption annotations
+```{r, message=FALSE, warning=FALSE}
+motifbreakr.res <- readRDS('/project2/gca/aselewa/heart_atlas_project/motifbreakR_Results/motifbreakR_cardiac_TFs_PIP20_06272021.rds')
+
+motif.breaks <- motifbreakr.res[motifbreakr.res$effect == "strong",]
+motif.breaks.tbl <- motif.breaks %>% as_tibble() %>% 
+  distinct(SNP_id, geneSymbol, .keep_all = T) %>% 
+  dplyr::select(SNP_id, geneSymbol, effect) %>%
+    mutate(tf.info = paste0(geneSymbol," - ", effect)) %>% 
+  dplyr::select(-geneSymbol, -effect) %>% 
+  dplyr::rename(SNP = SNP_id) %>%
+    group_by(SNP) %>% 
+  summarise(tf.info = paste0(tf.info, collapse=',')) %>% 
+  dplyr::rename(snp = SNP)
+
+selected.snps.df <- selected.snps.df %>% left_join(., motif.breaks.tbl, by = "snp")
+```
+
+```{r}
+selected.snps.df <- selected.snps.df %>% 
+    dplyr::select(-weight, -frac_pip, -ref, -alt) %>% 
+    dplyr::rename(PIP = pip, `Gene Linked` = gene_name, 
+                  `Gene PIP`=gene_pip, `Link Method`=category, 
+                  `Chromatin status`=annots,
+                  FetalHeart_DNase=`FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.gz`,
+                  AdultHeart_H3K27ac=H3K27ac_heart_concat,
+                  FGT_ChIPseq=FGT_ChIP_lifted_from_mm10,
+                  motif_break_strong = tf.info) %>% 
+    mutate(PIP = round(PIP, 3), `Gene PIP` = round(`Gene PIP`, 3))
+```
+
+
+```{r, eval=FALSE}
+selected.snps.df %>% filter(snp == "rs11264280") %>% arrange(-`Gene PIP`)
+
+selected.snps.df %>% filter(snp == "rs577676") %>% arrange(-`Gene PIP`)
+
+selected.snps.df %>% filter(snp == "rs6801957") %>% arrange(-`Gene PIP`) %>% as.data.frame()
+
+selected.snps.df %>% filter(snp == "rs1906615") %>% arrange(-`Gene PIP`)
+
+selected.snps.df %>% filter(snp == "rs3807989") %>% arrange(-`Gene PIP`)
+
+selected.snps.df %>% filter(snp == "rs10821415") %>% arrange(-`Gene PIP`)  %>% as.data.frame()
+
+selected.snps.df %>% filter(snp == "rs11598047") %>% arrange(-`Gene PIP`)
+
+selected.snps.df %>% filter(snp == "rs1152591") %>% arrange(-`Gene PIP`)
+
+selected.snps.df %>% filter(snp == "rs7172038") %>% arrange(-`Gene PIP`)
+
+selected.snps.df %>% filter(snp == "rs2106261") %>% arrange(-`Gene PIP`)
+
+```
+
+
+```{r}
+snp_list <- union(na.omit(candidate_loci_highpip_snps.df$high_pip_snp), vanOuwerkerk_table5$SNP)
+
+selected.snps.df <- finemap_res[finemap_res$snp %in% snp_list, ] %>% 
+  dplyr::rename(functional_pip = susie_pip) %>% 
+  dplyr::select(chr, pos, snp, locus, pval, functional_pip)
+
+selected.snps.gr <- makeGRangesFromDataFrame(selected.snps.df, start.field = "pos", end.field = "pos", keep.extra.columns = T)
+seqlevelsStyle(selected.snps.gr) <- "UCSC"
+
+selected.snps.gr <- plyranges::join_overlap_left(selected.snps.gr, candidate_loci.gr[,c("sentinel_snp","locus")])
+all.equal(selected.snps.df$snp, selected.snps.gr$snp)
+selected.snps.df$vanOuwerkerk_locus <- selected.snps.gr$locus.y
+selected.snps.df$sentinel_snp <- selected.snps.gr$sentinel_snp
+  
+finemap_unifprior_res <- finemap_unifprior_res %>% dplyr::rename(unif_pip = susie_pip)
+
+selected.snps.df <- selected.snps.df %>% left_join(., finemap_unifprior_res[, c("snp", "unif_pip")], by = "snp")
+
+annotations <- c('/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/annotations_for_finemapping_hg19/CM_specific_peaks_hg19.bed',
+                 '/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/annotations_for_finemapping_hg19/CM_nonDA_peaks_hg19.bed',
+                 '/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/annotations_for_finemapping_hg19/CM_shared_peaks_hg19.bed',
+                 '/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/annotations_for_finemapping_hg19/other_peaks_hg19.bed',
+                 '/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/hg19_mapped/H3K27ac_heart_concat.bed',
+                 '/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.bed.gz')
+
+selected.snps.df <- annotate_snps_binary(selected.snps.df,  annotations, keep.annot.only = F)
+
+selected.snps.gr <- makeGRangesFromDataFrame(selected.snps.df, start.field = "pos", end.field = "pos")
+seqlevelsStyle(selected.snps.gr) <- "UCSC"
+
+selected.snps.gr$pcHiC <- ifelse(countOverlaps(selected.snps.gr, pcHiC.gr) > 0, 1, 0)
+
+selected.snps.gr$ABC <- ifelse(countOverlaps(selected.snps.gr, ABC.gr) > 0, 1, 0)
+
+selected.snps.df <- cbind(selected.snps.df, mcols(selected.snps.gr))
+selected.snps.df <- selected.snps.df %>% mutate(varID = paste0(chr,'_',pos)) %>% left_join(., eqtls.gr.hg19.df, by = "varID") %>% dplyr::select(-varID)
+```
+
+```{r}
+selected.snps.df <- selected.snps.df %>% 
+    dplyr::rename(SNP = snp,
+                  `-log10Pval` = pval,
+                  CM_shared_OCR=`CM_shared_peaks_hg19.bed_d`,
+                  CM_specific_OCR=`CM_specific_peaks_hg19.bed_d`,
+                  CM_nonDA_OCR=`CM_nonDA_peaks_hg19.bed_d`,
+                  non_CM_OCR=`other_peaks_hg19.bed_d`,
+                  FetalHeart_DNase=`FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.bed.gz_d`,
+                  AdultHeart_H3K27ac=`H3K27ac_heart_concat.bed_d`) %>%
+  dplyr::mutate(functional_pip = round(functional_pip, 3), unif_pip = round(unif_pip, 3))
+
+selected.snps.df <- selected.snps.df %>% left_join(., vanOuwerkerk_table5[, c("SNP", "p-value")], by = "SNP")
+selected.snps.df <- selected.snps.df %>% left_join(., vanOuwerkerk_table4, by = "SNP")
+
+selected.snps.df$AS_Pval <- pmin(selected.snps.df$`p-value`, selected.snps.df$`p-value (Z-test)`, na.rm=T)
+
+selected.snps.df$CM_OCR <- pmax(selected.snps.df$CM_specific_OCR, selected.snps.df$CM_nonDA_OCR, selected.snps.df$CM_shared_OCR, na.rm=T)
+
+selected.snps.df <- selected.snps.df %>% arrange(vanOuwerkerk_locus, -functional_pip) %>% 
+    dplyr::select(SNP, chr, pos, locus, vanOuwerkerk_locus, sentinel_snp, `-log10Pval`, AS_Pval, functional_pip, unif_pip, CM_OCR, non_CM_OCR, AdultHeart_H3K27ac, FetalHeart_DNase, pcHiC, ABC, eQTL_Symbols, ) 
+```
+
+```{r}
+write.csv(selected.snps.df,
+          "/project2/xinhe/shared_data/aFib_gene_finemapping/benchmark_analysis/vanOuwerkerk_CircRes2020/all_snps_annot_table.csv")
+```
+
+Trackplot for rs6801957 and SCN10A
+```{r rs6801957-SCN10A-trackplot, dev = c("png", "pdf"), fig.width=12, fig.height=8, warning=FALSE}
+finemapstats.gr[finemapstats.gr$snp == "rs6801957",]
+
+selected.snps.df[selected.snps.df$SNP == "rs6801957",]
+
+region <- mapgen:::get_gene_region(genemapping_res, "SCN10A", ext = 10000)
+start(region) <- gene.locations[gene.locations$gene_name == "SCN10A",]$start - 500
+end(region) <- gene.locations[gene.locations$gene_name == "SCN10A",]$end + 500
+
+start(region) <- 38.62 * 1e6
+end(region) <- 38.84 * 1e6
+
+snps_of_interest <- c("rs6801957", "rs6599220", "rs7430477")
+snps_of_interest %in% finemapstats.gr$snp
+snps_colors <- c("pink", "gray", "gray")
+
+selected.snps.df[selected.snps.df$SNP %in% snps_of_interest,]
+
+mapgen:::get_LD_bigSNP(finemapstats.gr[finemapstats.gr$snp %in% snps_of_interest, ], 
+                       bigSNP = big.snp, topSNP = "rs6801957")
+  
+finemapping_annot_trackplot(finemapstats.gr, 
+                            region, 
+                            gene.annots, 
+                            bigSNP = big.snp,
+                            genome = "hg19", 
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data, 
+                            data_colors = c("red", "green", "purple"), 
+                            data_ylim = c(0,0.8),
+                            peaks = peaks, 
+                            color_pip_by = "cs", 
+                            highlight_snps = snps_of_interest,
+                            highlight_colors = snps_colors,
+                            verbose = TRUE)
+```
+
+Trackplot for rs9940321
+```{r rs9940321-trackplot, dev = c("png", "pdf"), fig.width=12, fig.height=8, warning=FALSE}
+
+snps_of_interest <- c("rs2106261", "rs9940321")
+snps_of_interest %in% finemapstats.gr$snp
+snps_colors <- c("pink", "gray")
+
+selected.snps.df[selected.snps.df$SNP %in% snps_of_interest,]
+
+region <- "chr16:73041620-73083808"
+
+finemapping_annot_trackplot(finemapstats.gr, 
+                            region, 
+                            gene.annots, 
+                            bigSNP = big.snp,
+                            genome = "hg19", 
+                            genetrack_db = "txdb",
+                            txdb = txdb,
+                            filter_protein_coding_genes = TRUE,
+                            countsdata = atac_data, 
+                            data_colors = c("red", "green", "purple"), 
+                            data_ylim = c(0,0.8),
+                            peaks = peaks, 
+                            color_pip_by = "cs", 
+                            highlight_snps = snps_of_interest,
+                            highlight_colors = snps_colors,
+                            verbose = TRUE)
+```

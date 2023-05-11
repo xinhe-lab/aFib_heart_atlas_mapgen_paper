@@ -1,0 +1,892 @@
+---
+title: "Summarize finemapping results"
+output:
+  workflowr::wflow_html:
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+suppressMessages(library(tidyverse))
+suppressMessages(library(ComplexHeatmap))
+suppressMessages(library(mapgen))
+library(ggplot2)
+library(cowplot)
+source("../R/analysis_utils.R")
+```
+
+### Finemapping results
+```{r}
+data.dir <- '/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/'
+finemap_res <- readRDS(paste0(data.dir, '/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_torusprior_122loci.rds'))
+finemap_unif_res <- readRDS(paste0(data.dir, '/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_unifprior_122loci.rds'))
+out.dir <- '/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA'
+```
+
+```{r}
+library(vcfR)
+
+vcf <- read.vcfR("/project2/gca/aselewa/heart_atlas_project/GWAS/summary_statistics/aFib/ebi-a-GCST006414_aFib.vcf.gz")
+gwas.maf <- maf(vcf)
+vcf.fix <- getFIX(vcf, getINFO = TRUE) %>% as_tibble() %>% dplyr::select(ID, FILTER, INFO)
+
+all(vcf.fix$FILTER == "PASS")
+vcf.info <- vcf.fix %>% dplyr::select(ID, INFO)
+
+vcf.info <- vcf.info %>% separate(INFO, c("AF", "ReverseComplementedAlleles", "SwappedAlleles"), ";")
+
+vcf.info$AF <- as.numeric(gsub("AF=", "", vcf.info$AF))
+vcf.info <- unique(vcf.info)
+vcf.maf0.05.snps <- unique(vcf.info$ID[vcf.info$AF > 0.05])
+length(which(vcf.info$AF > 0.05))
+
+which(duplicated(vcf.info$ID)) %>% head()
+
+vcf.filtered <- read.vcfR("/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/GWAS/aFib.gwas.maf0.05.vcf.gz")
+```
+
+Credible sets
+
+```{r, fig.width=16, fig.height=2}
+
+finemap.CS.size.df <- finemap_res %>% group_by(locus) %>% filter(CS == 1) %>% summarise(n = dplyr::n())
+cat(sum(finemap.CS.size.df$n <= 5), "loci with 5 or fewer SNPs in credible sets. \n")
+
+bks <- c(0, 1, 5, 10, 20, 50, 10000)
+labs <- c("1", "2-5","6-10","11-20","21-50", "51+")
+bin.count <- table(cut(finemap.CS.size.df$n, breaks = bks, labels = labs))
+bin.count.df <- data.frame(count=as.numeric(bin.count), 
+                           Size=factor(names(bin.count), levels = rev(labs)), 
+                           group = "A", interval_size = c(2, 4, 4, 9, 29, 10))
+bin.count.df$Size <- factor(labs, levels = labs)
+
+bin.count.df
+```
+
+
+```{r snp-cs-size-distribution, dev=c('png', 'pdf'), fig.width=6, fig.height=4}
+ggplot(bin.count.df, aes(x=Size, y = count)) + 
+  geom_bar(stat = 'identity',  fill='darkgreen', width=0.7) + 
+  ggClean() + 
+  xlab('Credible Set Size (Num. SNPs)') + 
+  ylab('Credible Sets')
+```
+
+
+```{r snp-cs-size-distribution-2, fig.width=16, fig.height=2}
+ggplot(bin.count.df, aes(x = group, y=count, fill=Size)) + 
+  geom_col() + 
+  ggClean() + 
+  xlab('Genetic Credible Set Size') + 
+  ylab('Frequency') + 
+  ggtitle('Number of causal variants / Number of loci') + 
+  theme_void() +
+  coord_flip() +
+  geom_text(aes(label = paste0("\n", count)), color="white", position = position_stack(vjust = 0.5)) +
+  geom_text(aes(label = paste0(Size, "\n")), position = position_stack(vjust = 0.5)) +
+  theme(legend.position = 'none') +
+  scale_fill_manual(values = c("#aaaaaa",brewer.pal(n = 6, name = "Greens")[-1]))
+```
+
+```{r}
+bks <- c(0.01, 0.1, 0.5, 0.8, 0.9, 0.95, 0.99, 1)
+labs <- c("1-10%","10-50%","50-80%","80-90%","90-95%","95-99%",">99%")
+bin.count <- table(cut(finemap_res$susie_pip, breaks = bks, labels = labs))
+bin.count.df <- data.frame(count=as.numeric(bin.count), 
+                           Size=factor(names(bin.count), levels = labs), 
+                           group = "A", 
+                           interval_size = c(10, 40, 30, 10, 6, 6, 4))
+bin.count.df$Size <- factor(labs, levels = rev(labs))
+```
+
+```{r pip-bin-distribution, dev=c('png', 'pdf'), fig.width=6, fig.height=4}
+ggplot(bin.count.df, aes(x=Size, y = count)) + 
+  geom_bar(stat = 'identity', width=0.7, fill='darkgreen') + 
+  ggClean() +
+  xlab('PIP') + ylab('Number of SNPs') + 
+  coord_cartesian(ylim = c(0, 30))
+```
+
+```{r pip-bin-distribution-2, fig.width=16, fig.height=2}
+ggplot(bin.count.df, aes(x = group, y=interval_size, fill=Size)) + 
+  geom_col() + 
+  ggClean() + 
+  xlab('Genetic Credible Set Size') + 
+  ylab('Frequency') + 
+  ggtitle('Posterior probability of being a causal variant') + 
+  theme_void() +
+  coord_flip() +
+  geom_text(aes(label = paste0("\n", count)), color="white", position = position_stack(vjust = 0.5)) +
+  geom_text(aes(label = paste0(Size, "\n")), position = position_stack(vjust = 0.5)) +
+  theme(legend.position = 'none') +
+  scale_fill_manual(values = c("#aaaaaa",brewer.pal(n = 7, name = "Greens")[-1]))
+```
+
+
+Add SNP annotations
+```{r}
+annotation_bed_files <- list.files(paste0(data.dir, '/finemapping_latest_noAtrium_nonDA/annotations_for_finemapping_hg19'),
+                                   pattern = '*.bed', full.names = T)
+
+print(annotation_bed_files)
+
+sumstat.annot <- finemappeR::annotator(gwas = finemap_res, annotations = annotation_bed_files)
+
+annots <- rep("Unannotated", nrow(sumstat.annot))
+annots[sumstat.annot$all_eqtls_hg19.bed_d>0] <- "Coding, conserved or eQTLs"
+annots[sumstat.annot$Coding_UCSC.bed_d>0] <- "Coding, conserved or eQTLs"
+annots[sumstat.annot$Conserved_LindbladToh.bed_d>0] <- "Coding, conserved or eQTLs"
+annots[sumstat.annot$CM_specific_peaks_hg19.bed_d>0] <- "CM specific ATAC"
+annots[sumstat.annot$CM_nonDA_peaks_hg19.bed_d>0] <- "CM shared/non-DA ATAC"
+annots[sumstat.annot$CM_shared_peaks_hg19.bed_d>0] <- "CM shared/non-DA ATAC"
+annots[sumstat.annot$other_peaks_hg19.bed_d>0] <- "Non-CM ATAC"
+
+annot.snp.df <- data.frame(snp=finemap_res$snp,
+                           prior=finemap_res$susie_pip, 
+                           uniform=finemap_unif_res$susie_pip, 
+                           annots=annots)
+```
+
+Here we visualize the effect of genomic annotations on the PIP of each SNP
+
+Have separate categories for "CM specific ATAC" and "CM shared/non-DA ATAC" annotations
+```{r compare-pips-scatterplot-1, dev=c('png', 'pdf'), fig.width=9, fig.height=5}
+annot.snp.df$annots <- factor(annot.snp.df$annots, 
+                              levels = c("CM specific ATAC", "CM shared/non-DA ATAC", "Non-CM ATAC", 
+                                         "Coding, conserved or eQTLs", "Unannotated"))
+
+ggplot(annot.snp.df, aes(x=uniform, y = prior, color = annots)) + 
+  ggrastr::geom_point_rast() + 
+    geom_abline(slope = 1, intercept = 0, col = 'black', linetype='dashed') +
+  xlab('Uniform PIP') + ylab('Functional PIP') + 
+  xlim(0,1) + ylim(0,1) +
+  scale_color_manual(values = c("firebrick","blue","green","black","grey")) +
+  guides(color=guide_legend(title="Annotations")) +
+  theme_cowplot()
+```
+
+Merge "CM specific" with "CM shared/non-DA categories" into a single "CM ATAC" category
+```{r compare-pips-scatterplot-2, dev=c('png', 'pdf'), fig.width=9, fig.height=5}
+annot.snp.df$annots <- as.character(annot.snp.df$annots)
+annot.snp.df$annots[annot.snp.df$annots %in% c("CM specific ATAC", "CM shared/non-DA ATAC")] <- "CM ATAC"
+
+annot.snp.df$annots <- factor(annot.snp.df$annots, 
+                              levels = c("CM ATAC", "Non-CM ATAC", "Coding, conserved or eQTLs", "Unannotated"))
+
+ggplot(annot.snp.df, aes(x=uniform, y = prior, color = annots)) + 
+  ggrastr::geom_point_rast() + 
+    geom_abline(slope = 1, intercept = 0, col = 'black', linetype='dashed') +
+  xlab('Uniform PIP') + ylab('Functional PIP') + 
+  xlim(0,1) + ylim(0,1) +
+  scale_color_manual(values = c("firebrick","green","black","grey")) +
+  guides(color=guide_legend(title="Annotations")) +
+  theme_cowplot()
+```
+
+## Annotate high PIP SNPs
+
+Load gene annotations
+```{r}
+genomic.annots <- readRDS("/project2/xinhe/shared_data/aFib_gene_finemapping/GWAS_gene_mapping_annots_hg19.gr.rds")
+gene.annots <- genomic.annots$genes
+```
+
+### Finemapping with functional prior
+
+```{r load-finemapping-res}
+finemap.gr <- GenomicRanges::GRanges(seqnames = finemap_res$chr, ranges = IRanges::IRanges(start = finemap_res$pos, end = finemap_res$pos))
+finemap.gr$snp <- finemap_res$snp
+finemap.gr$pip <- finemap_res$susie_pip
+finemap.gr$pval <- finemap_res$pval
+finemap.gr$cs  <- finemap_res$CS
+finemap.gr$chr <- finemap_res$chr
+finemap.gr$pos <- finemap_res$pos
+finemap.gr$locus <- finemap_res$locus
+finemap.gr$ref <- finemap_res$a0
+finemap.gr$alt <- finemap_res$a1
+seqlevelsStyle(finemap.gr) <- "UCSC"
+finemap.gr <- finemap.gr[finemap.gr$pip > 1e-5, ]
+```
+
+Load high confidence SNP view table from gene mapping result (fractional PIP > 0.02)
+```{r gene-view}
+genemapping_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_mapping_result_latest_noAtrium_nonDA_newSuSiE/"
+genemapping_res <- readRDS(file.path(genemapping_dir, "aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds"))
+genemapping_res <- ungroup(genemapping_res)
+genemapping_res$fractional_PIP <- genemapping_res$pip * genemapping_res$frac_pip
+high.conf.snp.df <- genemapping_res[genemapping_res$fractional_PIP > 0.02,]
+```
+
+Add SNP-gene distance
+```{r}
+snp.gene <- high.conf.snp.df %>% dplyr::select(snp, pos, gene_name)
+gene.locs.df <- gene.annots %>% as_tibble()
+gene.locs.df$TSS <- ifelse(gene.locs.df$strand=="+", gene.locs.df$start, gene.locs.df$end)
+
+snp.gene.dist <- snp.gene %>% left_join(., gene.locs.df, by = 'gene_name') %>%
+    mutate(dist = abs(TSS - pos)) %>%
+    dplyr::select(snp, gene_name, dist)
+
+high.conf.snp.df <- inner_join(high.conf.snp.df, snp.gene.dist, by = c('snp','gene_name'))
+```
+
+Add other annotations
+```{r}
+seqlevelsStyle(finemap.gr) <- "NCBI"
+files <- c('/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/hg19_mapped/H3K27ac_heart_concat.bed', 
+           '/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.bed.gz', 
+           '/project2/gca/aselewa/heart_atlas_project/ENCODE/FGT_ChIP_lifted_from_mm10.bed')
+annotated.snps <- lapply(files, function(x){get_elements_overlap_snps(snp.gr = finemap.gr, annotations = x)})
+```
+
+```{r, message=FALSE, warning=FALSE}
+for(i in 1:length(annotated.snps)){
+    high.conf.snp.df <- left_join(high.conf.snp.df, annotated.snps[[i]], by = 'snp')
+}
+```
+
+Add GTEx v8 eQTL data (Run R/prepare_eQTL_for_gwas_overlap.R to prepare)
+```{r, message=FALSE, warning=FALSE}
+eqtls.gr.hg19 <- readRDS('/project2/gca/aselewa/heart_atlas_project/misc/V8_Signif_eQTLs_lifted_hg19.rds')
+eqtls.gr.hg19.df <- eqtls.gr.hg19 %>% 
+  as_tibble() %>% 
+  mutate(varID = paste0(seqnames,'_',start)) %>% 
+  filter(!is.na(Symbol)) %>%
+  dplyr::select(varID, Symbol) %>% 
+  dplyr::rename(eQTL_Symbol=Symbol) %>%
+  group_by(varID) %>% 
+  summarise(eQTL_Symbols=paste0(eQTL_Symbol, collapse=';'))
+
+high.conf.snp.df <- high.conf.snp.df %>% mutate(varID = paste0(chr,'_',pos)) %>% left_join(., eqtls.gr.hg19.df) %>% dplyr::select(-varID)
+```
+
+Add TF disruption annotations
+```{r, message=FALSE, warning=FALSE}
+motifbreakr.res <- readRDS('/project2/gca/aselewa/heart_atlas_project/motifbreakR_Results/motifbreakR_cardiac_TFs_PIP20_06272021.rds')
+
+motif.breaks <- motifbreakr.res[motifbreakr.res$effect == "strong",]
+motif.breaks.tbl <- motif.breaks %>% as_tibble() %>% 
+  distinct(SNP_id, geneSymbol, .keep_all = T) %>% 
+  dplyr::select(SNP_id, geneSymbol, effect) %>%
+    mutate(tf.info = paste0(geneSymbol," - ", effect)) %>% 
+  dplyr::select(-geneSymbol, -effect) %>% 
+  dplyr::rename(SNP = SNP_id) %>%
+    group_by(SNP) %>% 
+  summarise(tf.info = paste0(tf.info, collapse=',')) %>% 
+  dplyr::rename(snp = SNP)
+
+high.conf.snp.df <- high.conf.snp.df %>% left_join(., motif.breaks.tbl)
+```
+
+Add nearest gene (distance to TSS)
+```{r snp-view-6, message=FALSE, warning=FALSE}
+seqlevelsStyle(finemap.gr) <- "UCSC"
+snp.nearest.tss.gr <- find_nearest_genes(finemap.gr, gene.annots, dist.to = "tss")
+snp.nearest.tss.df <- as.data.frame(snp.nearest.tss.gr)[, c("snp", "nearest_gene")]
+
+high.conf.snp.df <- high.conf.snp.df %>% left_join(., snp.nearest.tss.df, by='snp')
+```
+
+SNP view table with fractional PIP > 0.02
+```{r snp-view-7}
+high.conf.snp.df <- high.conf.snp.df %>% 
+    dplyr::select(-weight, -frac_pip) %>% 
+    dplyr::rename(SNP = snp, `b37 bp` = pos, REF=ref, ALT=alt, PIP = pip, `Gene Linked` = gene_name, 
+                  `Gene PIP`=gene_pip, `Link Method`=category, 
+                  `Distance to Gene`=dist, `Chromatin status`=annots,
+                  FetalHeart_DNase=`FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.gz`,
+                  AdultHeart_H3K27ac=H3K27ac_heart_concat,
+                  FGT_ChIPseq=FGT_ChIP_lifted_from_mm10,
+                  motif_break_strong = tf.info,
+                  `Nearest Gene` = nearest_gene) %>% 
+    mutate(PIP = round(PIP, 3), `Gene PIP` = round(`Gene PIP`, 3)) %>% 
+    arrange(chr, `b37 bp`) 
+```
+
+Heatmap of the annotations for high PIP SNPs
+```{r}
+high.pip.snp.df <- high.conf.snp.df %>% 
+  group_by(SNP) %>%
+  filter(PIP >= 0.5) %>%
+  mutate(`Link Method`=paste(unique(`Link Method`), collapse = ",")) %>%
+  distinct(SNP, chr, `b37 bp`, PIP, `Chromatin status`, AdultHeart_H3K27ac, FetalHeart_DNase, FGT_ChIPseq, motif_break_strong, `Link Method`, eQTL_Symbols)
+
+cat(length(unique(high.pip.snp.df$SNP)), "SNPs with PIP >= 0.5. \n")
+
+readr::write_csv(high.pip.snp.df, file.path(out.dir, 'high.pip.snp.csv'))
+
+high.pip.snp.gr <- GRanges(seqnames = high.pip.snp.df$chr, 
+                                  ranges = IRanges(start = high.pip.snp.df$`b37 bp`, end = high.pip.snp.df$`b37 bp`), snp = high.pip.snp.df$SNP)
+seqlevelsStyle(high.pip.snp.gr) <- "UCSC"
+```
+
+```{r}
+celltype.bw <- list.files('/project2/gca/aselewa/heart_atlas_project/ArchR/ArchR_heart_latest_noAtrium/GroupBigWigs/CellTypes', pattern = 'Hg19*', full.names = T)
+bw.list <- lapply(celltype.bw, function(x){rtracklayer::import(x)})
+
+names <- c("Cardiomyocyte","Endothelial","Fibroblast","Lymphoid","Myeloid","Neuronal","Pericyte","Smooth Muscle")
+
+snp.access.mat <- list()
+for(i in 1:length(bw.list)){
+    snp.access.mat[[i]] <- subsetByOverlaps(bw.list[[i]], high.pip.snp.gr)$score
+}
+
+snp.access.mat.df <- data.frame(matrix(unlist(snp.access.mat), ncol = length(snp.access.mat)))
+colnames(snp.access.mat.df) <- names
+
+rAnno <- HeatmapAnnotation(which = "column",
+                           `H3K27ac` = factor(1*(!is.na(high.pip.snp.df$AdultHeart_H3K27ac))),
+                           `Fetal DHS` = factor(1*(!is.na(high.pip.snp.df$FetalHeart_DNase))),
+                           `PC-HiC` = factor(
+                             ifelse(yes = "pcHiC", no = "Other", 
+                                    test = grepl("pcHiC", high.pip.snp.df$`Link Method`, ignore.case = TRUE))),
+                           `TBX5/NKX2-5/GATA4 ChIP` = factor(1*(!is.na(high.pip.snp.df$FGT_ChIPseq))),
+                           `TF Motif Break`= factor(1*(!is.na(high.pip.snp.df$motif_break_strong))), 
+                           col = list(`H3K27ac` = c("0" = "mistyrose", "1" = "magenta"),
+                                      `TBX5/NKX2-5/GATA4 ChIP` = c("0" = "slategray1", "1"="dodgerblue"),
+                                      `Fetal DHS` = c("0" = "palegreen", "1" = "seagreen"),
+                                      `PC-HiC` = c("pcHiC" = "darkgoldenrod1", "Other"="lightyellow"),
+                                      `TF Motif Break` = c("0" = "lightgrey", "1"="black")))
+
+snp.access.mat.df <- log2((snp.access.mat.df)*100 + 1)
+snp.access.mat.df[snp.access.mat.df > 5] <- 5
+```
+
+```{r snp_annot_heatmap, dev=c('png', 'pdf'), fig.width=8, fig.height=5}
+p <- Heatmap(t(snp.access.mat.df), 
+        col = circlize::colorRamp2(c(0,2,5), c("lightblue","white","firebrick")), 
+        bottom_annotation = rAnno, 
+        name = 'log2 accessibility',
+        cluster_rows = T, 
+        cluster_columns = T,
+        height = unit(4, "cm"), 
+        show_row_dend = F, 
+        show_column_dend = F,
+        heatmap_legend_param = list(direction = "horizontal"))
+draw(p, heatmap_legend_side = "top")
+```
+
+Summary of the annotations for high PIP SNPs
+```{r}
+high.pip.snp.df$CM_OCR <- FALSE
+high.pip.snp.df$CM_OCR[grep("^CM", high.pip.snp.df$`Chromatin status`)] <- TRUE
+cat(sum(high.pip.snp.df$CM_OCR), "high PIP SNPs are in CM OCRs .\n")
+
+cat(sum(!is.na(high.pip.snp.df$AdultHeart_H3K27ac)), "of all high PIP variants overlapped H3K27ac marks in the heart. \n")
+cat(sum(!is.na(high.pip.snp.df$AdultHeart_H3K27ac[high.pip.snp.df$CM_OCR == TRUE])), "of variants in CM-OCRs overlapped H3K27ac marks in the heart. \n") 
+
+cat(sum(!is.na(high.pip.snp.df$FetalHeart_DNase)), "of all high PIP variants overlapped fetal DHS in the heart. \n")
+sum(!is.na(high.pip.snp.df$FetalHeart_DNase)) / nrow(high.pip.snp.df)
+
+cat(length(grep("pcHiC", high.pip.snp.df$`Link Method`)), "of all high PIP variants linked to promoters through PC-HiC. \n")
+length(grep("pcHiC", high.pip.snp.df$`Link Method`)) / nrow(high.pip.snp.df)
+
+cat(sum(!is.na(high.pip.snp.df$motif_break_strong)), "of all high PIP variants alter binding motifs. \n")
+sum(!is.na(high.pip.snp.df$motif_break_strong)) / nrow(high.pip.snp.df)
+
+cat(sum(!is.na(high.pip.snp.df$eQTL_Symbols)), "of all high PIP variants are eQTLs. \n")
+sum(!is.na(high.pip.snp.df$eQTL_Symbols)) / nrow(high.pip.snp.df)
+
+cat(sum(!is.na(high.pip.snp.df$FGT_ChIPseq)), "of all high PIP variants overlap with FGT ChIP-seq. \n")
+high.pip.snp.df[!is.na(high.pip.snp.df$FGT_ChIPseq), ] %>% as.data.frame()
+```
+
+
+### Finemapping with uniform prior
+
+```{r}
+finemap_unif.gr <- GenomicRanges::GRanges(seqnames = finemap_unif_res$chr, ranges = IRanges::IRanges(start = finemap_unif_res$pos, end = finemap_unif_res$pos))
+finemap_unif.gr$snp <- finemap_unif_res$snp
+finemap_unif.gr$pip <- finemap_unif_res$susie_pip
+finemap_unif.gr$pval <- finemap_unif_res$pval
+finemap_unif.gr$cs  <- finemap_unif_res$CS
+finemap_unif.gr$chr <- finemap_unif_res$chr
+finemap_unif.gr$pos <- finemap_unif_res$pos
+finemap_unif.gr$locus <- finemap_unif_res$locus
+finemap_unif.gr$ref <- finemap_unif_res$a0
+finemap_unif.gr$alt <- finemap_unif_res$a1
+seqlevelsStyle(finemap_unif.gr) <- "UCSC"
+finemap_unif.gr <- finemap_unif.gr[finemap_unif.gr$pip > 1e-5, ]
+```
+
+Load high confidence SNP view table from gene mapping result (fractional PIP > 0.02)
+```{r}
+genemapping_unif_dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_mapping_result_unifprior_latest_noAtrium_nonDA_newSuSiE/"
+genemapping_unif_res <- readRDS(file.path(genemapping_unif_dir, "aFib_Finemapped_GeneMapped_activepromoter.OCRs_enhancerloop.ABC.pcHiC.nearby20kb_dist.50000_genemapping_res.rds"))
+genemapping_unif_res <- ungroup(genemapping_unif_res)
+genemapping_unif_res$fractional_PIP <- genemapping_unif_res$pip * genemapping_unif_res$frac_pip
+high.conf.snp.unif.df <- genemapping_unif_res[genemapping_unif_res$fractional_PIP > 0.02,]
+```
+
+Add SNP-gene distance
+```{r}
+snp.gene <- high.conf.snp.unif.df %>% dplyr::select(snp, pos, gene_name)
+gene.locs.df <- gene.annots %>% as_tibble()
+gene.locs.df$TSS <- ifelse(gene.locs.df$strand=="+", gene.locs.df$start, gene.locs.df$end)
+
+snp.gene.dist <- snp.gene %>% left_join(., gene.locs.df, by = 'gene_name') %>%
+    mutate(dist = abs(TSS - pos)) %>%
+    dplyr::select(snp, gene_name, dist)
+
+high.conf.snp.unif.df <- inner_join(high.conf.snp.unif.df, snp.gene.dist, by = c('snp','gene_name'))
+```
+
+Add other annotations
+```{r}
+seqlevelsStyle(finemap_unif.gr) <- "NCBI"
+files <- c('/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/hg19_mapped/H3K27ac_heart_concat.bed', 
+           '/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.bed.gz', 
+           '/project2/gca/aselewa/heart_atlas_project/ENCODE/FGT_ChIP_lifted_from_mm10.bed')
+annotated.snps <- lapply(files, function(x){get_elements_overlap_snps(snp.gr = finemap_unif.gr, annotations = x)})
+
+for(i in 1:length(annotated.snps)){
+    high.conf.snp.unif.df <- left_join(high.conf.snp.unif.df, annotated.snps[[i]], by = 'snp')
+}
+```
+
+Add GTEx v8 eQTL data (Run R/prepare_eQTL_for_gwas_overlap.R to prepare)
+```{r}
+high.conf.snp.unif.df <- high.conf.snp.unif.df %>% mutate(varID = paste0(chr,'_',pos)) %>% 
+  left_join(., eqtls.gr.hg19.df, by = "varID") %>% dplyr::select(-varID)
+```
+
+Add TF disruption annotations
+```{r}
+high.conf.snp.unif.df <- high.conf.snp.unif.df %>% left_join(., motif.breaks.tbl, by = "snp")
+```
+
+Add nearest gene (distance to TSS)
+```{r}
+seqlevelsStyle(finemap_unif.gr) <- "UCSC"
+snp.nearest.tss.gr <- find_nearest_genes(finemap_unif.gr, gene.annots, dist.to = "tss")
+snp.nearest.tss.df <- as.data.frame(snp.nearest.tss.gr)[, c("snp", "nearest_gene")]
+
+high.conf.snp.unif.df <- high.conf.snp.unif.df %>% left_join(., snp.nearest.tss.df, by='snp')
+```
+
+SNP view table with fractional PIP > 0.02
+```{r}
+high.conf.snp.unif.df <- high.conf.snp.unif.df %>% 
+    dplyr::select(-weight, -frac_pip) %>% 
+    dplyr::rename(SNP = snp, `b37 bp` = pos, REF=ref, ALT=alt, PIP = pip, `Gene Linked` = gene_name, 
+                  `Gene PIP`=gene_pip, `Link Method`=category, 
+                  `Distance to Gene`=dist, `Chromatin status`=annots,
+                  FetalHeart_DNase=`FetalHeart_E083-DNase_hg19_cleaned_narrowPeak.gz`,
+                  AdultHeart_H3K27ac=H3K27ac_heart_concat,
+                  FGT_ChIPseq=FGT_ChIP_lifted_from_mm10,
+                  motif_break_strong = tf.info,
+                  `Nearest Gene` = nearest_gene) %>% 
+    mutate(PIP = round(PIP, 3), `Gene PIP` = round(`Gene PIP`, 3)) %>% 
+    arrange(chr, `b37 bp`) 
+```
+
+Heatmap of the annotations for high PIP SNPs
+```{r}
+high.conf.snp.unif.df <- high.conf.snp.unif.df %>% 
+  group_by(SNP) %>%
+  filter(PIP >= 0.5) %>%
+  mutate(`Link Method`=paste(unique(`Link Method`), collapse = ",")) %>%
+  distinct(SNP, chr, `b37 bp`, PIP, `Chromatin status`, AdultHeart_H3K27ac, FetalHeart_DNase, FGT_ChIPseq, motif_break_strong, `Link Method`, eQTL_Symbols)
+
+cat(length(unique(high.conf.snp.unif.df$SNP)), "SNPs with PIP >= 0.5. \n")
+
+readr::write_csv(high.conf.snp.unif.df, file.path(out.dir, 'high.pip.snp.unifprior.csv'))
+
+high.conf.snp.unif.gr <- GRanges(seqnames = high.conf.snp.unif.df$chr, 
+                                 ranges = IRanges(start = high.conf.snp.unif.df$`b37 bp`, end = high.conf.snp.unif.df$`b37 bp`), 
+                                 snp = high.conf.snp.unif.df$SNP)
+seqlevelsStyle(high.conf.snp.unif.gr) <- "UCSC"
+```
+
+```{r}
+celltype.bw <- list.files('/project2/gca/aselewa/heart_atlas_project/ArchR/ArchR_heart_latest_noAtrium/GroupBigWigs/CellTypes', pattern = 'Hg19*', full.names = T)
+bw.list <- lapply(celltype.bw, function(x){rtracklayer::import(x)})
+
+names <- c("Cardiomyocyte","Endothelial","Fibroblast","Lymphoid","Myeloid","Neuronal","Pericyte","Smooth Muscle")
+
+snp.access.mat <- list()
+for(i in 1:length(bw.list)){
+    snp.access.mat[[i]] <- subsetByOverlaps(bw.list[[i]], high.conf.snp.unif.gr)$score
+}
+
+snp.access.mat.df <- data.frame(matrix(unlist(snp.access.mat), ncol = length(snp.access.mat)))
+colnames(snp.access.mat.df) <- names
+
+rAnno <- HeatmapAnnotation(which = "column",
+                           `H3K27ac` = factor(1*(!is.na(high.conf.snp.unif.df$AdultHeart_H3K27ac))),
+                           `Fetal DHS` = factor(1*(!is.na(high.conf.snp.unif.df$FetalHeart_DNase))),
+                           `PC-HiC` = factor(
+                             ifelse(yes = "pcHiC", no = "Other", 
+                                    test = grepl("pcHiC", high.conf.snp.unif.df$`Link Method`, ignore.case = TRUE))),
+                           `TBX5/NKX2-5/GATA4 ChIP` = factor(1*(!is.na(high.conf.snp.unif.df$FGT_ChIPseq))),
+                           `TF Motif Break`= factor(1*(!is.na(high.conf.snp.unif.df$motif_break_strong))), 
+                           col = list(`H3K27ac` = c("0" = "mistyrose", "1" = "magenta"),
+                                      `TBX5/NKX2-5/GATA4 ChIP` = c("0" = "slategray1", "1"="dodgerblue"),
+                                      `Fetal DHS` = c("0" = "palegreen", "1" = "seagreen"),
+                                      `PC-HiC` = c("pcHiC" = "darkgoldenrod1", "Other"="lightyellow"),
+                                      `TF Motif Break` = c("0" = "lightgrey", "1"="black")))
+
+snp.access.mat.df <- log2((snp.access.mat.df)*100 + 1)
+snp.access.mat.df[snp.access.mat.df > 5] <- 5
+```
+
+```{r snp_annot_unif_heatmap, dev=c('png', 'pdf'), fig.width=8, fig.height=5}
+p <- Heatmap(t(snp.access.mat.df), 
+        col = circlize::colorRamp2(c(0,2,5), c("lightblue","white","firebrick")), 
+        bottom_annotation = rAnno, 
+        name = 'log2 accessibility',
+        cluster_rows = T, 
+        cluster_columns = T,
+        height = unit(4, "cm"), 
+        show_row_dend = F, 
+        show_column_dend = F,
+        heatmap_legend_param = list(direction = "horizontal"))
+draw(p, heatmap_legend_side = "top")
+```
+
+Summary of the annotations for high PIP SNPs
+```{r}
+high.conf.snp.unif.df$CM_OCR <- FALSE
+high.conf.snp.unif.df$CM_OCR[grep("^CM", high.conf.snp.unif.df$`Chromatin status`)] <- TRUE
+cat(sum(high.conf.snp.unif.df$CM_OCR), "high PIP SNPs are in CM OCRs .\n")
+
+cat(sum(!is.na(high.conf.snp.unif.df$AdultHeart_H3K27ac)), "of all high PIP variants overlapped H3K27ac marks in the heart. \n")
+cat(sum(!is.na(high.conf.snp.unif.df$AdultHeart_H3K27ac[high.conf.snp.unif.df$CM_OCR == TRUE])), "of variants in CM-OCRs overlapped H3K27ac marks in the heart. \n") 
+
+cat(sum(!is.na(high.conf.snp.unif.df$FetalHeart_DNase)), "of all high PIP variants overlapped fetal DHS in the heart. \n")
+sum(!is.na(high.conf.snp.unif.df$FetalHeart_DNase)) / nrow(high.conf.snp.unif.df)
+
+cat(length(grep("pcHiC", high.conf.snp.unif.df$`Link Method`)), "of all high PIP variants linked to promoters through PC-HiC. \n")
+length(grep("pcHiC", high.conf.snp.unif.df$`Link Method`)) / nrow(high.conf.snp.unif.df)
+
+cat(sum(!is.na(high.conf.snp.unif.df$motif_break_strong)), "of all high PIP variants alter binding motifs. \n")
+sum(!is.na(high.conf.snp.unif.df$motif_break_strong)) / nrow(high.conf.snp.unif.df)
+
+cat(sum(!is.na(high.conf.snp.unif.df$eQTL_Symbols)), "of all high PIP variants are eQTLs. \n")
+sum(!is.na(high.conf.snp.unif.df$eQTL_Symbols)) / nrow(high.conf.snp.unif.df)
+
+cat(sum(!is.na(high.conf.snp.unif.df$FGT_ChIPseq)), "of all high PIP variants overlap with FGT ChIP-seq. \n")
+high.conf.snp.unif.df[!is.na(high.conf.snp.unif.df$FGT_ChIPseq), ] %>% as.data.frame()
+```
+
+### Supplemental Figure 5b
+
+Proportions of high and low confidence SNPs (based on fine-mapping) in H3K27ac ChIP-seq region in the human heart (ENCODE) 
+and in Nkx2-5/Gata4/Tbx5 ChIP-seq regions identified in the mouse heart and lifted over to the human genome.
+
+```{r}
+DA.peaks <- readRDS("/project2/gca/aselewa/heart_atlas_project/ArchR/ArchR_heart_latest_noAtrium/PeakCalls/DA_MARKERS_FDRP_1_log2FC_1.rds")
+CM.specific.peaks <- DA.peaks$Cardiomyocyte
+cat(length(CM.specific.peaks), "CM specific peaks.\n")
+
+path <- system.file(package="liftOver", "extdata", "hg38ToHg19.over.chain")
+ch <- import.chain(path)
+CM.peak.set.hg19 <- unlist(liftOver(CM.specific.peaks, ch))
+seqlevelsStyle(CM.peak.set.hg19) <- "NCBI"
+
+CM.specific.peak.set.hg19 <- unlist(liftOver(CM.specific.peaks, ch))
+seqlevelsStyle(CM.specific.peak.set.hg19) <- "NCBI"
+
+#hg19
+finemap.res <- readRDS(paste0(data.dir, '/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_torusprior_122loci.rds'))
+finemap.res <- finemap.res %>% dplyr::rename(pip = susie_pip)
+finemap.res <- finemap.res[!duplicated(finemap.res$snp),]
+high.pip.snps <- finemap.res[finemap.res$pip>=0.5,]
+low.pip.snps <- finemap.res[finemap.res$pip<0.01,]
+
+# # load all SNPs with MAF > 5%
+# dbsnp150 <- rtracklayer::import('/project2/xinhe/shared_data/dbsnp150/dbsnp_150_maf05_snpsOnly.vcf.gz') #hg19
+# dbsnp150.gr <- SummarizedExperiment::rowRanges(dbsnp150)
+# dbsnp150.gr$SNP_id <- rownames(VariantAnnotation::info(dbsnp150))
+# seqlevelsStyle(dbsnp150.gr) <- 'UCSC'
+
+fgt.chip <- readr::read_tsv('/project2/gca/aselewa/heart_atlas_project/ENCODE/FGT_ChIP_lifted_from_mm10.bed', col_names = F)
+fgt.chip.gr <- GRanges(seqnames = sub('chr','',fgt.chip$X1), ranges = IRanges(start = fgt.chip$X2, end = fgt.chip$X3), type=fgt.chip$X4)
+
+h3k <- readr::read_tsv('/project2/gca/aselewa/heart_atlas_project/ENCODE/H3k27ac_gwas_hg19/hg19_mapped/H3K27ac_heart_concat.bed', col_names = F)
+h3k.gr <- GRanges(seqnames = sub('chr','',h3k$X1), ranges = IRanges(start = h3k$X2, end = h3k$X3))
+
+encode.gr <- list("Fog/Gata4/Tbx5"=fgt.chip.gr, "H3k27ac"=h3k.gr)
+
+```
+
+```{r ChIP_seq_PIP50_overlap_CM_specific_OCRs, dev=c('png', 'pdf'), fig.width=8, fig.height=6}
+high.pip.snps.gr <- GRanges(seqnames = high.pip.snps$chr, 
+                            ranges = IRanges(start = high.pip.snps$pos, end = high.pip.snps$pos),
+                            snp = high.pip.snps$snp)
+
+low.pip.snps.gr <- GRanges(seqnames = low.pip.snps$chr, 
+                        ranges = IRanges(start = low.pip.snps$pos, end = low.pip.snps$pos),
+                        snp = low.pip.snps$snp)
+
+# select SNPs in CM OCRs
+high.pip.snps.gr <- subsetByOverlaps(high.pip.snps.gr, CM.specific.peak.set.hg19)
+low.pip.snps.gr <- subsetByOverlaps(low.pip.snps.gr, CM.specific.peak.set.hg19)
+
+set.seed(1)
+nreps <- 15
+snp.list <- list()
+for(i in 1:nreps){
+    snp.list[[i]] <- low.pip.snps.gr[sample(1:length(low.pip.snps.gr), size = length(high.pip.snps.gr), replace = F),]
+}
+
+high.pip.overlaps <- join_overlap_list(gr.list = encode.gr, X = high.pip.snps.gr)
+high.pip.overlaps$`Fog/Gata4/Tbx5`
+
+random.overlaps <- lapply(snp.list, function(x){join_overlap_list(gr.list = encode.gr, X = x)})
+
+high.pip.overlaps.prop <- lapply(high.pip.overlaps, function(x){length(unique(x$snp))/length(high.pip.snps.gr)})
+
+random.overlaps.prop <- unlist(lapply(random.overlaps, function(x){
+    sapply(x, function(y){length(unique(y$snp))/length(snp.list[[1]])})
+}))
+
+mean.fgt.random.prop <- mean(random.overlaps.prop[names(random.overlaps.prop)=="Fog/Gata4/Tbx5"])
+sd.fgt.random.prop <- sd(random.overlaps.prop[names(random.overlaps.prop)=="Fog/Gata4/Tbx5"])/sqrt(length(snp.list[[1]]))
+
+mean.h3.random.prop <- mean(random.overlaps.prop[names(random.overlaps.prop)=="H3k27ac"])
+sd.h3.random.prop <- sd(random.overlaps.prop[names(random.overlaps.prop)=="H3k27ac"])/sqrt(length(snp.list[[1]]))
+
+chipseq.df <- data.frame(props = c(high.pip.overlaps.prop$`Fog/Gata4/Tbx5`, high.pip.overlaps.prop$H3k27ac, 
+                                   mean.fgt.random.prop, mean.h3.random.prop),
+                         type = rep(c("Fog/Gata4/Tbx5","H3k27ac"), 2),
+                         SNPs = rep(c("GWAS CM SNPs (PIP > 0.5)", "GWAS CM SNPs (PIP < 0.01)"), each = 2),
+                         sd = c(NA, NA, sd.fgt.random.prop, sd.h3.random.prop))
+chipseq.df$SNPs <- factor(chipseq.df$SNPs, levels = c("GWAS CM SNPs (PIP > 0.5)", "GWAS CM SNPs (PIP < 0.01)"))
+chipseq.df$type <- factor(chipseq.df$type, levels = c("H3k27ac", "Fog/Gata4/Tbx5"))
+
+ggplot(chipseq.df, aes(x=type, y=props, fill=SNPs)) + 
+    geom_bar(stat='identity', position='dodge') + 
+    ggClean() + 
+    ylab('Proportion of SNPs') + 
+    xlab('') +
+    scale_fill_brewer(palette = 'Set2') + 
+    geom_errorbar(aes(ymin=props-(1.96*sd), ymax=props+(1.96*sd)), width=0.1,
+                  position=position_dodge(.9)) + coord_cartesian(ylim = c(0, 1))
+
+print(chipseq.df)
+chipseq.df$props[1] / chipseq.df$props[3]
+```
+
+## SNPs for experimental study
+
+```{r snp-experimental-study}
+snp_list <- c("rs3176326", "rs117984853", "rs4999127", "rs35620480", "rs7172038", "rs1152591")
+
+finemap_res <- finemap_res %>% dplyr::rename("functional_pip" = "susie_pip", "functional_CS" = CS)
+finemap_unif_res <- finemap_unif_res %>% dplyr::rename("unif_pip" = "susie_pip", "unif_CS" = CS)
+
+finemap_combined_res <- finemap_res %>% 
+  dplyr::left_join(., y = finemap_unif_res[, c("snp", "unif_pip", "unif_CS")], by = "snp")
+
+finemap_combined_res[finemap_combined_res$snp %in% snp_list,] %>% 
+  dplyr::select(snp, pval, zscore, torus_prior, functional_pip, unif_pip, functional_CS, unif_CS)
+
+print(annot.snp.df[annot.snp.df$snp %in% snp_list,])
+```
+
+## Co-localization analysis betweeen GWAS and eQTL
+
+```{r}
+library(coloc)
+library(foreach)
+
+coloc.dir <- '/project2/xinhe/shared_data/aFib_gene_finemapping/coloc'
+dir.create(coloc.dir, showWarnings = F, recursive = T)
+```
+
+```{r load-gwas-eqtl}
+genemapping.dir <- "/project2/xinhe/shared_data/aFib_gene_finemapping/gene_mapping_result/aFib_gene_mapping_result_latest_noAtrium_nonDA_newSuSiE/"
+
+finemap.res <- read_csv(file.path(genemapping.dir, 'aFib_Finemapped_SNPView_fractionalPIP_0.02.csv'))
+
+gwas <- readRDS('/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_torusprior_122loci.rds')
+eqtl <- readRDS('/project2/gca/aselewa/heart_atlas_project/misc/V8_Signif_eQTLs_lifted_hg19.rds') %>% as_tibble()
+```
+
+Select loci with fine-mapped SNPs (PIP >= 0.5) that are also heart eQTLs
+```{r}
+# ldblocks <- mapgen::LD_Blocks
+# ldblocks.gr <- GRanges(seqnames = ldblocks$X1, ranges = IRanges(start = ldblocks$X2, end = ldblocks$X3), num = ldblocks$X4)
+
+gwas$varids <- paste0(gwas$chr,'_',gwas$pos,'_b37')
+
+highPIP.eQTL.finemap.res <- finemap.res %>%
+  dplyr::filter(!is.na(eQTL_Symbols), pip >= 0.5) %>%
+  dplyr::distinct(snp, chr, pos, ref, alt, pip, locus, eQTL_Symbols)
+
+loci <- unique(highPIP.eQTL.finemap.res$locus)
+cat(length(loci), "loci with finemapped SNPs (PIP >= 0.5) have genes linked through eQTL.\n")
+```
+
+```{r run-coloc, eval=FALSE}
+coloc.results <- foreach(l=loci) %do%{
+  print(l)
+  curr.gwas <- gwas[gwas$locus==l,]
+  curr.varids <- curr.gwas$varids
+
+  causal.snps <- finemap.res$SNP[finemap.res$locus==l]
+  causal.snp.ids <- curr.varids[curr.gwas$snp %in% causal.snps]
+  # curr.genes <- finemap.res$`eQTL Symbols`[finemap.res$locus==l]
+
+  curr.eqtl <- eqtl[eqtl$variant_ids %in% curr.varids,]
+
+  curr.gwas <- curr.gwas[match(curr.eqtl$variant_ids, curr.gwas$varids),]
+
+  curr.eqtl$variant_ids <- make.unique(curr.eqtl$variant_ids)
+  curr.gwas$varids <- curr.eqtl$variant_ids
+
+  gwas.obj <- list(beta = curr.gwas$beta, varbeta = curr.gwas$se^2, snp = curr.gwas$varids, position = curr.gwas$pos, type="cc", sdY=1)
+  eqtl.obj <- list(beta = curr.eqtl$slope, varbeta = curr.eqtl$slope_se^2, snp = curr.gwas$varids, position = curr.gwas$pos, type="quant", sdY=1)
+
+  coloc.abf(dataset1=gwas.obj, dataset2=eqtl.obj)
+  # coloc.susie(dataset1 = gwas.obj, dataset2 = eqtl.obj, susie.args = list(prior_weights = curr.gwas$torus_pip, L=1))
+}
+names(coloc.results) <- loci
+
+saveRDS(coloc.results, file = file.path(coloc.dir, 'coloc_analysis_noAtrium_nonDA.rds'))
+```
+
+```{r}
+coloc.results <- readRDS(file.path(coloc.dir, 'coloc_analysis_noAtrium_nonDA.rds'))
+h0.probability <- sapply(coloc.results, function(x){x$summary['PP.H0.abf']})
+h3.probability <- sapply(coloc.results, function(x){x$summary['PP.H3.abf']})
+h4.probability <- sapply(coloc.results, function(x){x$summary['PP.H4.abf']})
+
+coloc.summary <- data.frame(locus = as.integer(names(coloc.results)), H0 = h0.probability, H3 = h3.probability, H4 = h4.probability, row.names = NULL)
+
+highPIP.linked.coloc.res <- highPIP.eQTL.finemap.res %>% dplyr::left_join(., coloc.summary[,c("locus", "H4")], by = "locus")
+highPIP.linked.coloc.res$H4 <- round(highPIP.linked.coloc.res$H4, 2)
+
+cat(length(unique(highPIP.linked.coloc.res$snp)), "SNPs included. \n")
+
+cat("Significant colocalization: \n")
+highPIP.linked.coloc.res %>% filter(H4 > 0.5) %>% arrange(locus)
+readr::write_csv(highPIP.linked.coloc.res, file.path(coloc.dir, 'coloc_analysis_noAtrium_nonDA.csv'))
+```
+
+
+```{r coloc-pp4}
+hist(h4.probability, breaks = 30, main = 'PP both traits share a single causal variant',
+     xlab='Probability', ylab='Number of Loci')
+```
+
+```{r}
+coloc.results.high <- coloc.results[h4.probability > 0.5]
+shared.snps <- list()
+for(i in 1:length(coloc.results.high)){
+
+  curr.locus.df <- coloc.results.high[[i]]$results %>%
+    arrange(-SNP.PP.H4) %>%
+    filter(SNP.PP.H4 > 0.1) %>%
+    dplyr::select(snp, SNP.PP.H4)
+
+  shared.snps[[i]] <- curr.locus.df
+}
+
+print(shared.snps)
+```
+
+### Number of finemapped variants or top GWAS variants, among the 68 high PIP loci, are eQTLs
+```{r}
+eqtls.gr.hg19 <- readRDS('/project2/gca/aselewa/heart_atlas_project/misc/V8_Signif_eQTLs_lifted_hg19.rds')
+eqtls.gr.hg19.df <- eqtls.gr.hg19 %>% 
+  as_tibble() %>% 
+  mutate(varID = paste0(seqnames,'_',start)) %>% 
+  filter(!is.na(Symbol)) %>%
+  dplyr::select(varID, Symbol) %>% 
+  dplyr::rename(eQTL_Symbol=Symbol) %>%
+  group_by(varID) %>% 
+  summarise(eQTL_Symbols=paste0(eQTL_Symbol, collapse=';'))
+```
+
+```{r}
+data.dir <- '/project2/xinhe/shared_data/aFib_gene_finemapping/pipeline/'
+finemap_res <- readRDS(paste0(data.dir, '/finemapping_latest_noAtrium_nonDA/AF_finemapping_result_torusprior_122loci.rds'))
+
+highPIP_loci <- finemap_res %>% filter(susie_pip >= 0.5) %>% distinct(locus) %>% pull()
+cat(length(highPIP_loci), "loci with at least one SNP PIP >= 0.5 \n")
+
+highPIP_loci_finemap_res <- finemap_res %>% dplyr::filter(locus %in% highPIP_loci) 
+
+highPIP_loci_finemap_res <- highPIP_loci_finemap_res %>% mutate(varID = paste0(chr,'_',pos)) %>% left_join(., eqtls.gr.hg19.df) %>% dplyr::select(-varID)
+```
+
+Number of loci in which finemapped SNPs are heart eQTLs
+```{r}
+highPIP_loci_finemappedSNP_finemap_res <- highPIP_loci_finemap_res %>% filter(susie_pip >= 0.5)
+
+cat(length(unique(highPIP_loci_finemappedSNP_finemap_res$locus)), "loci with finemapped SNPs PIP >= 0.5 \n")
+
+highPIP_loci_with_finemappedSNP <- unique(highPIP_loci_finemappedSNP_finemap_res$locus[which(!is.na(highPIP_loci_finemappedSNP_finemap_res$eQTL_Symbols))])
+cat(length(highPIP_loci_with_finemappedSNP), "loci in which finemapped SNPs are heart eQTLs\n")
+```
+
+Number of loci in which top GWAS SNPs are heart eQTLs
+```{r}
+highPIP_loci_topSNP_finemap_res <- highPIP_loci_finemap_res %>% group_by(locus) %>% dplyr::arrange(desc(abs(zscore)), desc(pval)) %>% dplyr::slice(1)
+
+cat(length(unique(highPIP_loci_topSNP_finemap_res$locus)), "loci with at least one SNP PIP >= 0.5 \n")
+
+highPIP_loci_with_topSNP <- unique(highPIP_loci_topSNP_finemap_res$locus[which(!is.na(highPIP_loci_topSNP_finemap_res$eQTL_Symbols))])
+
+cat(length(highPIP_loci_with_topSNP), "loci in which top GWAS SNPs are heart eQTLs\n")
+
+highPIP_loci_topSNP_finemap_res <- highPIP_loci_finemap_res %>% 
+  group_by(locus) %>% dplyr::arrange(desc(abs(zscore)), desc(pval)) %>% dplyr::slice(1) %>%
+  dplyr::filter(!is.na(eQTL_Symbols)) %>%
+  dplyr::distinct(snp, chr, pos, susie_pip, locus, eQTL_Symbols)
+```
+
+Colocalization analysis for those loci in which top GWAS SNPs are heart eQTLs
+```{r run-coloc-topGWAS, eval=FALSE}
+coloc.results <- foreach(l=highPIP_loci_with_topSNP) %do%{
+  print(l)
+  curr.gwas <- gwas[gwas$locus==l,]
+  curr.varids <- curr.gwas$varids
+
+  causal.snps <- finemap.res$SNP[finemap.res$locus==l]
+  causal.snp.ids <- curr.varids[curr.gwas$snp %in% causal.snps]
+  # curr.genes <- finemap.res$`eQTL Symbols`[finemap.res$locus==l]
+
+  curr.eqtl <- eqtl[eqtl$variant_ids %in% curr.varids,]
+
+  curr.gwas <- curr.gwas[match(curr.eqtl$variant_ids, curr.gwas$varids),]
+
+  curr.eqtl$variant_ids <- make.unique(curr.eqtl$variant_ids)
+  curr.gwas$varids <- curr.eqtl$variant_ids
+
+  gwas.obj <- list(beta = curr.gwas$beta, varbeta = curr.gwas$se^2, snp = curr.gwas$varids, position = curr.gwas$pos, type="cc", sdY=1)
+  eqtl.obj <- list(beta = curr.eqtl$slope, varbeta = curr.eqtl$slope_se^2, snp = curr.gwas$varids, position = curr.gwas$pos, type="quant", sdY=1)
+
+  coloc.abf(dataset1=gwas.obj, dataset2=eqtl.obj)
+  # coloc.susie(dataset1 = gwas.obj, dataset2 = eqtl.obj, susie.args = list(prior_weights = curr.gwas$torus_pip, L=1))
+}
+names(coloc.results) <- highPIP_loci_with_topSNP
+
+saveRDS(coloc.results, file = file.path(coloc.dir, 'coloc_analysis_highPIP_loci_with_topSNP_noAtrium_nonDA.rds'))
+```
+
+```{r}
+coloc.results <- readRDS(file.path(coloc.dir, 'coloc_analysis_highPIP_loci_with_topSNP_noAtrium_nonDA.rds'))
+h0.probability <- sapply(coloc.results, function(x){x$summary['PP.H0.abf']})
+h3.probability <- sapply(coloc.results, function(x){x$summary['PP.H3.abf']})
+h4.probability <- sapply(coloc.results, function(x){x$summary['PP.H4.abf']})
+
+coloc.summary <- data.frame(locus = as.integer(names(coloc.results)), H0 = h0.probability, H3 = h3.probability, H4 = h4.probability, row.names = NULL)
+
+highPIP.topSNP.coloc.res <- highPIP_loci_topSNP_finemap_res %>% dplyr::left_join(., coloc.summary[,c("locus", "H4")], by = "locus")
+highPIP.topSNP.coloc.res$H4 <- round(highPIP.topSNP.coloc.res$H4, 2)
+
+cat(length(unique(highPIP.topSNP.coloc.res$snp)), "SNPs included.\n")
+
+cat("Significant colocalization: \n")
+highPIP.topSNP.coloc.res %>% filter(H4 > 0.5) %>% arrange(locus)
+
+readr::write_csv(highPIP.topSNP.coloc.res, file.path(coloc.dir, 'coloc_analysis_highPIP_loci_with_topSNP_noAtrium_nonDA.csv'))
+```
