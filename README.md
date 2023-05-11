@@ -31,7 +31,7 @@ Additional analysis scripts and notebooks:
 All source code and software in this repository are made available under the terms of the MIT license.
 
 
-[Mapgen-link]: https://kevinlkx.github.io/mapgen/articles/index.html
-[Analysis-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/analysis
-[R-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/R
+[Mapgen-link]: https://kevinlkx.github.io/mapgen/index.html
+[Analysis-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/tree/main/analysis
+[R-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/tree/main/R
 [GEO-link]: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE224997
