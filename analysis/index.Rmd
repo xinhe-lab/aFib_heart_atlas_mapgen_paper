@@ -23,25 +23,25 @@ medRxiv 2022.02.02.22270312; doi: https://doi.org/10.1101/2022.02.02.22270312
 
 ## Mapgen workflow
 
-We implemented the computational workflow in the R package [Mapgen](https://kevinlkx.github.io/mapgen/articles/index.html). 
+We implemented the computational workflow in the R package [Mapgen][Mapgen-link]. 
 ![](assets/workflow.overview.png)
 
-   1. Obtain cell-type-resolved open chromatin regions (OCRs) using scATAC-seq and snRNA-seq. 
-   2. Assess the enrichment of genetic signals of a trait of interest in OCRs across all the cell types.
-   3. Perform Bayesian statistical fine mapping on trait-associated loci, 
-   using a informative prior that favors likely 
-   functional variants located in OCRs of enriched cell types. 
-   4. Assign the likely cell type(s) through which the causal variants act in most loci 
-   using fine-mapped SNPs and its associated cell type information.
-   5. Use our novel gene mapping procedure to infer causal genes at each locus. 
+Additional analysis scripts and notebooks: 
 
-## Code repository
-
- * [Analysis](https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/analysis)
- 
- * [R code](https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/R)
+ * [Analysis notebooks][Analysis-git-repo]
+ * [R scripts][R-git-repo]
 
 ## Data
 
-  * GEO repository for snRNA-seq and scATAC-seq data from our study: accession [GSE224997](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE224997).
+  * GEO repository for snRNA-seq and scATAC-seq data from our study: accession [GSE224997][GEO-link].
+
+## License
+
+All source code and software in this repository are made available under the terms of the MIT license.
+
+
+[Mapgen-link]: https://kevinlkx.github.io/mapgen/articles/index.html
+[Analysis-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/tree/main/analysis
+[R-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/tree/main/R
+[GEO-link]: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE224997
 
