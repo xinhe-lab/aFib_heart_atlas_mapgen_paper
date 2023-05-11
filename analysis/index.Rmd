@@ -23,7 +23,7 @@ medRxiv 2022.02.02.22270312; doi: https://doi.org/10.1101/2022.02.02.22270312
 
 ## Mapgen workflow
 
-We implemented the computational and statistical precedure in the R package [Mapgen](https://kevinlkx.github.io/mapgen/articles/index.html). 
+We implemented the computational workflow in the R package [Mapgen](https://kevinlkx.github.io/mapgen/articles/index.html). 
 ![](assets/workflow.overview.png)
 
    1. Obtain cell-type-resolved open chromatin regions (OCRs) using scATAC-seq and snRNA-seq. 
