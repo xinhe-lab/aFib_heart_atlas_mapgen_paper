@@ -17,8 +17,7 @@ Genome-wide association studies (GWAS) have linked hundreds of loci to cardiac d
 
 ## Reference
 
-Single-cell genomics improves the discovery of risk variants and genes of cardiac traits.
-Alan Selewa\*, Kaixuan Luo\*, Michael Wasney, Linsin Smith, Chenwei Tang, Heather Eckart, Ivan Moskowitz, Anindita Basu, Xin He, Sebastian Pott.
+Alan Selewa\*, Kaixuan Luo\*, Michael Wasney, Linsin Smith, Xiaotong Sun, Chenwei Tang, Heather Eckart, Ivan Moskowitz, Anindita Basu, Xin He, Sebastian Pott. Single-cell genomics improves the discovery of risk variants and genes of Atrial Fibrillation.
 medRxiv 2022.02.02.22270312; doi: https://doi.org/10.1101/2022.02.02.22270312
 
 ## Mapgen workflow
@@ -40,7 +39,7 @@ Additional analysis scripts and notebooks:
 All source code and software in this repository are made available under the terms of the MIT license.
 
 
-[Mapgen-link]: https://kevinlkx.github.io/mapgen/index.html
+[Mapgen-link]: https://github.com/xinhe-lab/mapgen
 [Analysis-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/tree/main/analysis
 [R-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/tree/main/R
 [GEO-link]: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE224997
