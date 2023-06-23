@@ -131,6 +131,21 @@ cat(length(unique(finemapstats.gr$locus)), "finemapped loci. \n")
 ```
 
 ### Partition into functional categories
+```{r}
+annots.list <- list(OCRs = genomic.annots$OCRs_hg19,
+                    UTRs = genomic.annots$UTRs,
+                    Exons = genomic.annots$exons,
+                    Introns = genomic.annots$introns)
+
+sum_pip_res <- partition_pip_annots(finemapstats.gr, annots.list)
+
+sum.pips <- sum_pip_res$sum.pips
+head(sum.pips)
+
+n.snps <- sum_pip_res$n.snps
+head(n.snps)
+```
+
 ```{r sum-pip-functional-categories}
 locus.list <- sort(unique(finemapstats.gr$locus))
 names(functional.annots)
@@ -223,8 +238,8 @@ length(which(prop.pip.mat$OCRs > 0.5)) / nrow(prop.pip.mat)
 categories.order <- c("OCRs", "UTRs", "Exons", "Introns", "Intergenic")
 colors1 <- c(OCRs = "#E18727FF", UTRs = "#238b45", Exons =  "#bee6af", Introns = "#B09C85FF", Intergenic = "#aaaaaa")
 
-dat1 <- compile_structure_plot_data(prop.pip.mat, categories = rev(categories.order))
-structure_plot(dat1, colors = rev(colors1))
+dat1 <- compile_structure_plot_data(prop.pip.mat, categories = categories.order)
+structure_plot(dat1, colors = colors1)
 ```
 
 ### Partition loci into cell types (disjoint categories)
@@ -301,62 +316,13 @@ Make a structure plot to show the proportion of PIPs in each cell type category.
 ```{r structure-plot-disjoint-OCRs-2, dev=c('png', 'pdf'), fig.width=10, fig.height=2.5}
 OCR.categories.order <- c("Cardiomyocyte", "Endothelial", "Fibroblast", "Lymphoid", "Myeloid", "Pericyte", "Shared 2-3", "Shared 4+")
 colors2 <- c(palette, "Shared 2-3" = "royalblue", "Shared 4+" = "#003C86")
-dat2 <- compile_structure_plot_data(prop.pip.mat2, rev(OCR.categories.order))
-structure_plot(dat2, colors2[rev(OCR.categories.order)])
+dat2 <- compile_structure_plot_data(prop.pip.mat2, OCR.categories.order)
+structure_plot(dat2, colors2[OCR.categories.order])
 ```
 
 ```{r prop.pip.CM-2}
 hist(prop.pip.mat2$Cardiomyocyte, xlab = "Proportion", main = "Proportion of Cardiomyocyte OCRs")
 cat(length(which(prop.pip.mat2$Cardiomyocyte >= 0.9)), "loci with Cardiomyocyte OCRs proportion > 90% \n")
-```
-
-Highlight a few loci
-
-```{r highlight-loci}
-Fibroblast.locus <- rownames(prop.pip.mat2)[which(prop.pip.mat2$Fibroblast > 0.5)]
-ldblocks.gr[ldblocks.gr$locus %in% Fibroblast.locus,]
-Fibroblast.locus.location <- ldblocks.gr[ldblocks.gr$locus %in% Fibroblast.locus,]$location
-cat("Fibroblast locus", Fibroblast.locus.location, "\n")
-
-Myeloid.locus <- rownames(prop.pip.mat2)[which(prop.pip.mat2$Myeloid > 0.5)]
-ldblocks.gr[ldblocks.gr$locus %in% Myeloid.locus,]
-Myeloid.locus.location <- ldblocks.gr[ldblocks.gr$locus %in% Myeloid.locus,]$location
-cat("Myeloid locus", Myeloid.locus.location, "\n")
-
-Lymphoid.locus <- rownames(prop.pip.mat2)[which(prop.pip.mat2$Lymphoid > 0.5)]
-ldblocks.gr[ldblocks.gr$locus %in% Lymphoid.locus,]
-Lymphoid.locus.location <- ldblocks.gr[ldblocks.gr$locus %in% Lymphoid.locus,]$location
-cat("Lymphoid locus", Lymphoid.locus.location, "\n")
-
-highlight.loci <- c(Fibroblast.locus, Myeloid.locus, Lymphoid.locus)
-```
-
-```{r structure-plot-functional-annot-highlight, dev=c('png', 'pdf'), fig.width=10, fig.height=2.5}
-dat1$highlight <- ""
-dat1$highlight[which(dat1$locus %in% highlight.loci)] <- "*"
-structure_plot(dat1, rev(colors1), highlight = TRUE)
-
-dat1$highlight[which(dat1$locus %in% highlight.loci)] <- dat1$locus[which(dat1$locus %in% highlight.loci)]
-dat1$highlight[which(duplicated(dat1$highlight))] <- ""
-structure_plot(dat1, rev(colors1), highlight = TRUE)
-```
-
-```{r structure-plot-disjoint-OCRs-highlight, dev=c('png', 'pdf'), fig.width=10, fig.height=2.5}
-dat2$highlight <- ""
-dat2$highlight[which(dat2$locus %in% highlight.loci)] <- "*"
-structure_plot(dat2, colors2[rev(OCR.categories.order)], highlight = TRUE)
-
-dat2$highlight[which(dat2$locus %in% highlight.loci)] <- dat2$locus[which(dat2$locus %in% highlight.loci)]
-dat2$highlight[which(duplicated(dat2$highlight))] <- ""
-structure_plot(dat2, colors2[rev(OCR.categories.order)], highlight = TRUE)
-```
-
-```{r check-Fibroblast-locus-77}
-finemap.locus.gr <- finemapstats.gr[finemapstats.gr$locus == 77]
-
-overlaps <- (countOverlaps(finemap.locus.gr, disjoint.OCRs.hg19$Fibroblast, ignore.strand = TRUE) > 0)
-finemap.locus.in.gr <- finemap.locus.gr[overlaps,]
-print(finemap.locus.in.gr)
 ```
 
 ## DEG analysis
