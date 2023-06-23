@@ -102,3 +102,95 @@ process_coaccess <- function(celltype = c("CM", "all"), cor_thresh = 0.7, dist_t
 
   return(coaccess)
 }
+
+#' Find all genes (promoters) within 1MB genes and assign weights based on distance
+#'
+#' @param snp.gr Genomic Ranges with the SNP locations.
+#' @param promoters.gr Genomic Ranges with the gene promoter locations.
+#' @param c.dist A scaling number used for computing weight based on SNP-gene distance. Weight = exp(-dist/c). Default = 1e5 (100kb).
+#'
+#' @return
+gene_by_distance <- function(snp.gr, promoters.gr, c.dist = 1e5, dist.to = c("tss", "midpoint", "end")){
+
+  res <- plyranges::join_overlap_inner(x = promoters.gr,
+                                       y = snp.gr, maxgap = 1e6) # get all promoters within 1MB
+
+  if(dist.to == "tss"){
+    res$gene_pos <- res$tss
+  }else if(dist.to == "midpoint"){
+    res$gene_pos <- round((start(res) + end(res))/2)
+  }else{
+    res$gene_pos <- end(res)
+  }
+
+  res$distance <- abs(res$pos - res$gene_pos)
+  res$weight <- exp(-res$distance / as.numeric(c.dist))
+
+  return(res)
+}
+
+
+#' get gene credible sets from SNP level gene mapping table
+#'
+#' @param snp.gene.pip.mat A data frame of SNP level gene mapping table
+#' @param by.locus If TRUE, get credible sets based on locus level gene PIP
+#' @param gene.cs.percent.thresh percentage threshold for gene credible sets
+#'
+#' @return a data frame with gene credible sets
+#' @export
+get_gene_cs <- function(snp.gene.pip.mat, by.locus = TRUE, gene.cs.percent.thresh = 0.8){
+
+  # add locus level gene PIP
+  # For each locus - gene pair, sum over the fractional PIPs for SNPs in the locus and linked to the gene
+  snp.locus.gene.pip.mat <- snp.gene.pip.mat %>%
+    group_by(locus, gene_name) %>%
+    mutate(locus_gene_pip = sum(pip * frac_pip)) %>% ungroup()
+
+  # simplify to get locus, gene_name, locus_gene_pip, and gene_pip
+  locus.gene.pip.df <- snp.locus.gene.pip.mat %>%
+    dplyr::select(locus, gene_name, gene_pip, locus_gene_pip) %>%
+    distinct(locus, gene_name, .keep_all=TRUE)
+
+  # check if gene PIP is equal to the sum of gene-locus PIP
+  for(gene in unique(locus.gene.pip.df$gene_name)){
+    if(!all.equal(sum(locus.gene.pip.df$locus_gene_pip[locus.gene.pip.df$gene_name == gene]), locus.gene.pip.df$gene_pip[locus.gene.pip.df$gene_name == gene][1])){
+      cat(gene, "'s gene_pip is not equal to the sum of locus_gene_pip! \n")
+    }
+  }
+
+  if(by.locus){
+    # for each locus, keep the genes with gene locus PIP cumsum > 0.8
+    gene.cumsum.df <- locus.gene.pip.df %>%
+      group_by(locus) %>%
+      arrange(desc(locus_gene_pip)) %>%
+      mutate(gene_pip_csum = cumsum(locus_gene_pip)) %>%
+      dplyr::slice(1:which(gene_pip_csum >= gene.cs.percent.thresh)[1])
+
+    # create gene cs table
+    gene.cs.df <- gene.cumsum.df %>%
+      group_by(locus) %>%
+      summarise(gene_cs = paste0(gene_name, collapse=','),
+                gene_cs_locus_pip = paste(paste0(gene_name, '(',round(locus_gene_pip,3),')'), collapse=','),
+                top_gene = gene_name[1],
+                top_locus_gene_pip = locus_gene_pip[1],
+                top_gene_pip = gene_pip[1])
+  }else{
+    # for each locus, keep the genes with gene locus PIP cumsum > 0.8
+    gene.cumsum.df <- locus.gene.pip.df %>%
+      group_by(locus) %>%
+      arrange(desc(gene_pip)) %>%
+      mutate(gene_pip_csum = cumsum(gene_pip)) %>%
+      dplyr::slice(1:which(gene_pip_csum >= gene.cs.percent.thresh)[1])
+
+    # create gene cs table
+    gene.cs.df <- gene.cumsum.df %>%
+      group_by(locus) %>%
+      summarise(gene_cs = paste0(gene_name, collapse=','),
+                gene_cs_pip = paste(paste0(gene_name, '(',round(gene_pip,3),')'), collapse=','),
+                top_gene = gene_name[1],
+                top_gene_pip = gene_pip[1])
+  }
+
+  return(list(gene.cumsum.df = gene.cumsum.df, gene.cs.df = gene.cs.df, locus.gene.pip.df = locus.gene.pip.df))
+}
+
