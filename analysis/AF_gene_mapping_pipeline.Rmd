@@ -75,6 +75,9 @@ genomic.annots$ABC <- ABC.gr
 # Define enhancer regions
 genomic.annots$enhancer_regions <- genomic.annots$OCRs_hg19
 
+# Active promoter regions
+genomic.annots$active_promoters <- subsetByOverlaps(genomic.annots$promoters, genomic.annots$OCRs_hg19, minoverlap = 100)
+
 cat("genomic.annots: \n")
 names(genomic.annots)
 ```
@@ -83,8 +86,6 @@ Run gene mapping using: active_promoter_method = "OCRs", enhancer_loop_method = 
 
 ```{r run-gene-mapping-mapgen, eval=FALSE}
 # Compute gene PIP
-genomic.annots$active_promoters <- subsetByOverlaps(genomic.annots$promoters, genomic.annots$OCRs_hg19, minoverlap = 100)
-
 genemapping_res <- compute_gene_pip(finemap.gr, 
                                      genomic.annots,
                                      enhancer.loop.method = 'ABC.pcHiC.nearby20kb',
