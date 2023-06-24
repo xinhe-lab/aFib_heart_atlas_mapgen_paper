@@ -14,7 +14,8 @@ medRxiv 2022.02.02.22270312; doi: https://doi.org/10.1101/2022.02.02.22270312
 
 ## Code and the Mapgen package
 
-We implemented the computational workflow in the R package [Mapgen][Mapgen-link]. 
+We implemented the computational workflow in the R package [mapgen][mapgen-link]. 
+The version used in the paper: [doi:10.5281/zenodo.8067477][mapgen-zenodo-doi].
 
 Additional analysis scripts and notebooks: 
 
@@ -30,7 +31,8 @@ Additional analysis scripts and notebooks:
 All source code and software in this repository are made available under the terms of the MIT license.
 
 
-[Mapgen-link]: https://github.com/xinhe-lab/mapgen
+[mapgen-link]: https://github.com/xinhe-lab/mapgen
+[mapgen-zenodo-doi]:doi:10.5281/zenodo.8067477
 [Analysis-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/tree/main/analysis
 [R-git-repo]: https://github.com/xinhe-lab/aFib_heart_atlas_mapgen_paper/tree/main/R
 [GEO-link]: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE224997
